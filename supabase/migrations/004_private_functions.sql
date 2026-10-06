@@ -107,6 +107,23 @@ begin
   end if;
 
   if v_actor_role = 'super_admin' then
+    -- Nobody may switch off their own account, whoever they are.
+    --
+    -- Without this, the last Super Admin in the system could press one
+    -- button, lock themselves out, and there would be no way back in
+    -- through the app at all. The whole platform would be bricked by
+    -- accident.
+    --
+    -- The check is on WHO is being changed, not on WHETHER anything
+    -- changes. Setting an account to the value it already has is
+    -- allowed, because that is how somebody who was switched off by a
+    -- colleague gets switched back on. If the guard were on "whether",
+    -- they could never re-enable themselves either, which would be a
+    -- different way to brick the system.
+    if p_user_id = p_actor_id and not p_active then
+      raise exception 'You cannot switch off your own account';
+    end if;
+
     -- allowed, carry on
   elsif v_actor_role = 'supplier' then
     -- A Supplier may only manage clients and agents who belong to them.

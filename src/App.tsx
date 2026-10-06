@@ -23,16 +23,22 @@ import { useAuth } from './hooks/useAuth'
 import { useLanguage } from './hooks/useLanguage'
 import { isConfigured } from './lib/supabase'
 import type { TranslationKey } from './i18n'
-import type { UserRole } from './types/database'
+import type { Currency, Profile, UserRole } from './types/database'
 
 import { LoginPage } from './pages/LoginPage'
 import { ChangePasswordPage } from './pages/ChangePasswordPage'
 import { PortalShell, Loading, type NavItem } from './components/ui'
 
 import { SuperAdminHome } from './portals/superadmin/SuperAdminHome'
+import { SuperAdminAccounts } from './portals/superadmin/SuperAdminAccountsPage'
 import { SupplierHome } from './portals/supplier/SupplierHome'
+import { SupplierProducts } from './portals/supplier/SupplierProductsPage'
+import { SupplierClientPermissions } from './portals/supplier/SupplierClientPermissions'
 import { ClientHome } from './portals/client/ClientHome'
+import { ClientCatalog } from './portals/client/ClientCatalogPage'
 import { AgentHome } from './portals/agent/AgentHome'
+import { AgentProducts } from './portals/agent/AgentProductsPage'
+import { ComingSoon } from './components/ui'
 
 /** Which path prefixes each role may reach. '/' is allowed for all so a
  *  signed-in person landing on a bare URL is not bounced to an error. */
@@ -54,14 +60,15 @@ function navForRole(role: UserRole, language: 'id' | 'en'): NavItem[] {
     case 'super_admin':
       return [
         { to: '/admin', label: id ? 'Beranda' : 'Home', icon: '🏠' },
+        { to: '/admin/accounts', label: id ? 'Akun' : 'Accounts', icon: '👥' },
         { to: '/admin/suppliers', label: id ? 'Pemasok' : 'Suppliers', icon: '🏭' },
-        { to: '/admin/transactions', label: id ? 'Transaksi' : 'Transactions', icon: '💳' },
         { to: '/admin/audit', label: id ? 'Log' : 'Audit log', icon: '📋' },
       ]
     case 'supplier':
       return [
         { to: '/supplier', label: id ? 'Beranda' : 'Home', icon: '🏠' },
         { to: '/supplier/products', label: id ? 'Produk' : 'Products', icon: '📦' },
+        { to: '/supplier/clients', label: id ? 'Izin Client' : 'Client access', icon: '🔑' },
         { to: '/supplier/requests', label: id ? 'Permintaan' : 'Requests', icon: '📥' },
         { to: '/supplier/orders', label: id ? 'Pesanan' : 'Orders', icon: '🧾' },
       ]
@@ -75,6 +82,7 @@ function navForRole(role: UserRole, language: 'id' | 'en'): NavItem[] {
     case 'agent':
       return [
         { to: '/agent', label: id ? 'Beranda' : 'Home', icon: '🏠' },
+        { to: '/agent/products', label: id ? 'Cari' : 'Find', icon: '🔍' },
         { to: '/agent/request', label: id ? 'Minta' : 'Request', icon: '📷' },
         { to: '/agent/funds', label: id ? 'Dana' : 'Funds', icon: '💰' },
       ]
@@ -88,6 +96,23 @@ function portalTitleForRole(role: UserRole, t: (k: TranslationKey) => string): s
     case 'client': return t('cliTitle')
     case 'agent': return t('agTitle')
   }
+}
+
+/**
+ * The currency a person's money is shown in.
+ *
+ * Only a Supplier can choose this: it lives in supplier_settings, which
+ * Clients and Agents cannot read. So for everyone else this is the one
+ * documented default, IDR.
+ *
+ * If the client later runs the business in another country, this becomes
+ * a real gap and the fix belongs in the database -- a view exposing
+ * nothing but the currency for the caller's own Supplier. It is called
+ * out in DECISIONS.md rather than quietly guessed at, because showing a
+ * price with the wrong symbol is a money bug, not a formatting one.
+ */
+function currencyFor(): Currency {
+  return 'IDR'
 }
 
 export default function App() {
@@ -118,7 +143,7 @@ export default function App() {
     return (
       <div className="flex min-h-dvh items-center justify-center bg-slate-50 px-4">
         <div className="card max-w-md text-center">
-          <span aria-hidden="true" className="mb-3 block text-3xl">⚙️</span>
+          <span aria-hidden="true" className="mb-3 block text-3xl">🔧</span>
           <h1 className="text-lg font-bold text-slate-900">{t('notConfiguredTitle')}</h1>
           <p className="mt-2 text-sm text-slate-600">{t('notConfiguredBody')}</p>
         </div>
@@ -189,14 +214,6 @@ export default function App() {
     navigate(homePathForRole(profile.role))
   }
 
-  // Rendering the component is itself the role check. Even with perfect
-  // routing, a person only ever gets the portal written for their role.
-  const HomeComponent =
-    profile.role === 'super_admin' ? SuperAdminHome
-    : profile.role === 'supplier' ? SupplierHome
-    : profile.role === 'client' ? ClientHome
-    : AgentHome
-
   return (
     <PortalShell
       title={portalTitleForRole(profile.role, t)}
@@ -213,7 +230,82 @@ export default function App() {
       navItems={navForRole(profile.role, language)}
       logoutLabel={t('logout')}
     >
-      <HomeComponent profile={profile} language={language} />
+      <Screen path={path} profile={profile} language={language} />
     </PortalShell>
   )
+}
+
+// ===================================================================
+// Which screen for this path and this role
+// ===================================================================
+// Split out from the component above so the switch can be read on its own.
+// It is one function rather than a map because each case needs different
+// props, and a map of functions would hide that behind indirection.
+//
+// Falling through to the role's home screen is deliberate. An
+// unrecognised path inside a section someone is allowed to be in should
+// show their home, not a blank page.
+function Screen({
+  path,
+  profile,
+  language,
+}: {
+  path: string
+  profile: Profile
+  language: 'id' | 'en'
+}) {
+  const currency = currencyFor()
+
+  // A Supplier's own profile IS the supplier id, because the database
+  // keys everything on it. Clients and Agents have one too, naming the
+  // Supplier they trade with. So one value covers every screen that needs
+  // to know who the Supplier is.
+  const supplierId = profile.supplier_id ?? profile.id
+  const id = language === 'id'
+
+  switch (profile.role) {
+    case 'super_admin':
+      if (path === '/admin') {
+        return <SuperAdminHome profile={profile} language={language} />
+      }
+      if (path === '/admin/accounts') {
+        return <SuperAdminAccounts profile={profile} language={language} />
+      }
+      // The remaining admin screens are Phase 3. Saying so plainly beats
+      // a blank screen: it shows the app is working and this part is
+      // still to come.
+      return <ComingSoon label={id ? 'Layar ini belum dibuat' : 'This screen is not built yet'} />
+
+    case 'supplier':
+      if (path === '/supplier/products') {
+        return <SupplierProducts supplierId={supplierId} language={language} />
+      }
+      if (path === '/supplier/clients') {
+        return (
+          <SupplierClientPermissions supplierId={supplierId} language={language} />
+        )
+      }
+      if (path === '/supplier/requests' || path === '/supplier/orders') {
+        return <ComingSoon label={id ? 'Layar ini belum dibuat' : 'This screen is not built yet'} />
+      }
+      return <SupplierHome profile={profile} language={language} />
+
+    case 'client':
+      if (path === '/client/catalog') {
+        return <ClientCatalog currency={currency} language={language} />
+      }
+      if (path === '/client/orders' || path === '/client/pay') {
+        return <ComingSoon label={id ? 'Layar ini belum dibuat' : 'This screen is not built yet'} />
+      }
+      return <ClientHome profile={profile} language={language} />
+
+    case 'agent':
+      if (path === '/agent/products') {
+        return <AgentProducts currency={currency} language={language} />
+      }
+      if (path === '/agent/request' || path === '/agent/funds') {
+        return <ComingSoon label={id ? 'Layar ini belum dibuat' : 'This screen is not built yet'} />
+      }
+      return <AgentHome profile={profile} language={language} />
+  }
 }

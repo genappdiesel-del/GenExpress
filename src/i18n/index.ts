@@ -162,42 +162,18 @@ export const translations: Record<LanguageCode, Record<TranslationKey, string>> 
   en,
 }
 
-// --- Currency formatting ---------------------------------------------
-// Indonesian Rupiah has no decimal part in normal use. Showing "Rp 10.000,00"
-// would be wrong, so we drop the decimals when they are all zeros and keep
-// them when they are not. This is exact -- we never round a stored number.
-
-export type CurrencyCode = 'IDR' | 'USD' | 'MYR' | 'SGD'
-
-export function formatMoney(
-  amount: number | string,
-  currency: CurrencyCode = 'IDR',
-  language: LanguageCode = 'id',
-): string {
-  const value = typeof amount === 'string' ? Number(amount) : amount
-  if (!Number.isFinite(value)) return '-'
-
-  // IDR and similar currencies have no minor unit in practice.
-  const noMinorUnits = currency === 'IDR'
-
-  const formatted = new Intl.NumberFormat(language === 'id' ? 'id-ID' : 'en-US', {
-    style: 'currency',
-    currency,
-    minimumFractionDigits: noMinorUnits ? 0 : 2,
-    maximumFractionDigits: noMinorUnits ? 0 : 2,
-  }).format(value)
-
-  // Intl writes "Rp 10.000" for IDR. We want "Rp10.000" (no space) which is
-  // the local convention. Strip the space between the code and the digits.
-  return noMinorUnits ? formatted.replace(/\s+/g, '') : formatted
-}
-
-/** Format a quantity with up to 3 decimals, dropping trailing zeros. */
-export function formatQty(qty: number | string): string {
-  const value = typeof qty === 'string' ? Number(qty) : qty
-  if (!Number.isFinite(value)) return '-'
-  return new Intl.NumberFormat('id-ID', { maximumFractionDigits: 3 }).format(value)
-}
+// --- Money and dates ----------------------------------------------------
+// Money formatting used to live here as well as in src/lib/money.ts. Two
+// copies of the same function is a trap: they drift, and a fix applied to
+// one leaves the other showing different numbers on a different screen.
+// The only copy now lives in lib/money.ts, which also owns the rules
+// that matter for this app: currencies with no usable minor unit, and
+// converting to whole small units for arithmetic without float drift.
+//
+// These are re-exported rather than deleted so existing imports keep
+// working and there is still exactly one way to format a number.
+export { formatMoney, formatQty, parseNumber, toUnits, fromUnits } from '../lib/money'
+export type { Currency } from '../lib/money'
 
 export function formatDate(iso: string, language: LanguageCode = 'id'): string {
   const date = new Date(iso)

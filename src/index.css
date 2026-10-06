@@ -225,3 +225,44 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* ===================================================================
+   Printing
+   ===================================================================
+   Used by the barcode label page. Everything on screen that is not a
+   label is hidden with Tailwind's print:hidden class; this block sets
+   up the paper.
+
+   A4 with no margin is deliberate. Printers cannot print to the edge of
+   the paper, so a margin would push the content into a second page and
+   most label printers cannot reach the edge at all. We leave a small
+   margin on the page itself and let the printer add its own unprintable
+   edge on top.
+
+   -webkit-print-color-adjust is needed on Chrome, or the white label
+   background is dropped and the bars print onto whatever colour the
+   page background happens to be.
+   =================================================================== */
+@media print {
+  @page {
+    size: A4;
+    margin: 8mm;
+  }
+
+  html,
+  body {
+    background: #fff;
+  }
+
+  * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* The shell around the app -- side menu, header, bottom nav -- must not
+     print. Using display:none rather than visibility:hidden removes the
+     space it would otherwise leave behind. */
+  .print\:hidden {
+    display: none !important;
+  }
+}

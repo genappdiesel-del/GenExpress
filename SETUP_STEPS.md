@@ -35,7 +35,7 @@ None of these ask for a credit card.
 
 ---
 
-## STEP 2 — Run the four database migrations
+## STEP 2 — Run the thirteen database migrations
 
 These create your tables and, most importantly, your security rules.
 
@@ -43,12 +43,25 @@ These create your tables and, most importantly, your security rules.
 
 1. In the left menu click **SQL Editor**.
 2. Click **New query**.
-3. Open `supabase/migrations/001_profiles.sql` from this project on your
-   computer. Copy the whole file. Paste it into the editor. Click **Run**.
-4. Repeat for:
-   - `002_rls_profiles.sql`
-   - `003_grants_and_audit.sql`
-   - `004_private_functions.sql`
+3. Open the matching file from `supabase/migrations/` on your computer.
+   Copy the whole file. Paste it into the editor. Click **Run**.
+4. Work down this list, in this order:
+
+   | # | File | What it sets up |
+   |---|---|---|
+   | 1 | `001_profiles.sql` | The four kinds of account, and the first security rules |
+   | 2 | `002_rls_profiles.sql` | The rules that stop one business seeing another |
+   | 3 | `003_grants_and_audit.sql` | Who may read or write what, and the log |
+   | 4 | `004_private_functions.sql` | The hidden actions: change password, switch an account off |
+   | 5 | `005_supplier_settings.sql` | One row of settings per Supplier |
+   | 6 | `006_products.sql` | The product list and its two prices |
+   | 7 | `007_client_feature_settings.sql` | The nine switches a Supplier controls per Client |
+   | 8 | `008_product_views.sql` | **The most important file.** Two safe views: one for Clients, one for Agents |
+   | 9 | `009_stock_movements.sql` | The stock history, and the only way stock is allowed to move |
+   | 10 | `010_product_photo_storage.sql` | A private picture folder, closed to the public |
+   | 11 | `011_audit_triggers.sql` | The log records price and permission changes automatically |
+   | 12 | `012_account_views.sql` | The account list, readable only by you |
+   | 13 | `013_public_wrappers.sql` | Lets the app switch an account off, without opening the hidden door |
 
 **You should see "Success. No rows returned" after each one.**
 
@@ -67,20 +80,57 @@ This is the important part. It proves your data is actually private.
    file. Paste. Click **Run**.
 3. Look at the messages below the editor.
 
-**You want to see seven messages starting with `PASS` and none with `FAIL`.**
+**You want to see twenty-three messages starting with `PASS` and none with
+`FAIL`.**
+
+> Twenty-three, not twenty-one. Two of the checks print two messages each
+> because they prove two separate things. That is deliberate — merging
+> them would hide one failure behind the other.
+
+The file makes its own throwaway test data and deletes it again at the
+end, so it is safe to run as often as you like. Nothing real is touched.
+
+**The seven that prove nobody can see each other's business:**
 
 | If you see | What it means |
 |---|---|
-| `PASS - Client isolation` | A Client can see only their own data. Correct. |
-| `PASS - Supplier isolation` | A Supplier cannot see another Supplier's business. Correct. |
+| `PASS - Client isolation` | A Client can see only their own profile and Supplier. Correct. |
+| `PASS - Supplier isolation` | A Supplier cannot see another Supplier's team. Correct. |
 | `PASS - Privilege escalation blocked` | A Client cannot make themselves an owner. Correct. |
 | `PASS - Signed-out access` | Someone not logged in sees nothing. Correct. |
-| `PASS - Agent isolation` | An Agent sees only their own data. Correct. |
-| `PASS - Super Admin reach` | You, as the owner, can still see everything. Correct. |
+| `PASS - Agent isolation` | An Agent sees only their own profile and Supplier. Correct. |
+| `PASS - Super Admin reach` | You, as the owner, can still see everyone. Correct. |
 | `PASS - Deactivation cuts access` | Switching someone off really stops their access. Correct. |
 
+**The ten that protect your prices and your stock — where you lose money:**
+
+| If you see | What it means |
+|---|---|
+| `PASS - Client blocked from products table` | A Client cannot open the real product table at all. |
+| `PASS - Client view shape` | The Client's view has no hidden columns. Correct. |
+| `PASS - Client catalogue isolation` | A Client sees only their own Supplier's products. |
+| `PASS - Agent price protection` | An Agent cannot learn what a Client pays. |
+| `PASS - Agent blocked from products table` | An Agent cannot open the real product table either. |
+| `PASS - Permission switch works` | Switching a permission off removes the number from the data, not just the screen. |
+| `PASS - Stock integrity` | Stock only moves through the recorded method. Correct. |
+| `PASS - Agents cannot move stock` | An Agent cannot change stock. Correct. |
+| `PASS - Stock log is append-only` | The stock history cannot be rewritten, not even by you. |
+| `PASS - Backorder rule` | Stock cannot go below zero while backorder is off. |
+
+**The six that protect accounts:**
+
+| If you see | What it means |
+|---|---|
+| `PASS - Account list` | Only you can see the account list. A Supplier and a Client are refused. |
+| `PASS - Account view safety` | The account list carries no settings and no permission switches. |
+| `PASS - Account view join` | Each Client shows the correct Supplier's name. |
+| `PASS - Private functions stay private` | The browser cannot call the hidden actions directly. |
+| `PASS - Account deactivation` | A Supplier can switch off their own Client, and is refused for a rival's. |
+| `PASS - Self-deactivation is refused` | Nobody can lock themselves — or everyone — out. |
+
 > **If any test says `FAIL`, do not put the website online.** It means
-> data would leak between businesses. Send the message to your developer.
+> data would leak between businesses, or you could be locked out. Send
+> the message to your developer.
 
 ---
 
@@ -192,15 +242,46 @@ Your browser will open `http://localhost:5173`.
 
 ---
 
-## STEP 8 — Create the other roles and check they are separate
+## STEP 8 — Create a Supplier, and check the four roles are separate
 
-Still logged in as Super Admin. The "create user" screens arrive in
-Phase 2, so for now use the server function to make a test account. Or
-simply wait — this check is listed here so you know how it will be done.
+Still logged in as Super Admin.
 
-The real check happens in Phase 2. It is: log in as each of the four
-roles and confirm each one sees a different home screen and cannot reach
-the others' data.
+1. Tap **Akun** (Accounts) in the menu.
+2. Tap **＋ Akun baru** (New account).
+3. Fill in:
+   - **Nama lengkap** (Full name) — the person's real name
+   - **Nama pengguna** (Username) — what they will type to sign in.
+     Letters, numbers, dot or dash. At least 3 characters.
+   - **Peran** (Role) — choose **Pemasok** (Supplier)
+   - **Kata sandi sementara** (Temporary password) — at least 8 characters.
+     A green bar means it is strong; red means it is short or simple.
+4. Tap **Buat akun** (Create account).
+
+**The person must change that password the first time they sign in.**
+That is on purpose — it means the password you typed is only temporary
+and never becomes their real one.
+
+### Now check the other three roles
+
+Make four accounts this way: one Supplier, one Client, one Agent. Then
+sign in as each in turn and confirm:
+
+| Role | What you should see | What you should NOT see |
+|---|---|---|
+| Super Admin | Every account, in one list | — |
+| Supplier | Their own product list | Any other Supplier's products |
+| Client | A read-only catalogue with prices | Their own cost prices, or any Agent's price |
+| Agent | Products to scan, with the price they pay | What a Client pays |
+
+> **The most important thing to check:** as a Client, the page source
+> (Ctrl+U in a browser, or "View Source") must not contain the word
+> `agent_price` anywhere. If it does, stop and send a message to your
+> developer. That word appearing means the hidden price was sent to the
+> browser, and hiding it with a small "hidden" label would not stop a
+> determined person from seeing it.
+
+Then, while signed in as the Client, tap **Client access** — nothing
+should be there. If it is, send a message.
 
 ---
 
@@ -241,12 +322,15 @@ will connect Cloudflare Pages, which is free and needs no card.
 ## Checklist — are you done?
 
 - [ ] Supabase project created, password saved somewhere safe
-- [ ] Four migrations run, each said "Success"
-- [ ] Security tests run, seven `PASS`, zero `FAIL`
+- [ ] **Thirteen** migrations run, each said "Success"
+- [ ] Security tests run, **twenty-three** `PASS`, zero `FAIL`
 - [ ] First Super Admin created
 - [ ] Two Edge Functions deployed
 - [ ] `.env` file created with your two keys
 - [ ] `npm run dev` works and you can log in
+- [ ] A Supplier, a Client and an Agent account created from the **Akun** screen
+- [ ] You signed in as each of the four roles and saw a different home screen
+- [ ] As a Client, "View Source" does not contain the text `agent_price`
 - [ ] Pushed to a public GitHub repo with three secrets set
 
 ---
@@ -256,7 +340,12 @@ will connect Cloudflare Pages, which is free and needs no card.
 | The problem | What it means | What to do |
 |---|---|---|
 | "permission denied for table profiles" | The table exists but has not been given access yet | Run `003_grants_and_audit.sql` |
+| "permission denied for view client_products_view" | The view exists but has not been given access yet | Run `008_product_views.sql` |
+| "permission denied for function set_user_active" | The wrapper is missing | Run `013_public_wrappers.sql` |
 | "new row violates row-level security policy" | The security rules refused the action | Usually means someone tried something they should not be allowed to. Check which test failed |
 | Screen is blank and the console says keys are missing | `.env` file is missing or empty | Copy `.env.example` to `.env`, fill it in, then restart `npm run dev` |
+| "Code 42P01: relation auth.users does not exist" or the test file stops early with a missing column | Supabase changed the shape of its own `auth.users` table | Send the message to your developer — the test file needs one column added |
 | Login says wrong username or password | The account was not created, or the password was changed at first login | Try the new password you set after the first login |
+| "You cannot switch off your own account" | You tried to lock yourself out | That is the rule working. Ask another Super Admin to do it |
+| Barcode scan does nothing on a phone | The camera needs permission, or the phone cannot use it in this browser | Use the box below the button and type the digits instead |
 | Website suddenly stops working after a week | The free database paused | Open the Supabase dashboard to wake it, then fix the keep-alive secrets (Step 9) |
