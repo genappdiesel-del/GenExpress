@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- viewport-fit=cover lets the app draw into the notch area on modern phones.
+         env(safe-area-inset-*) in CSS then keeps buttons above the home bar. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0f766e" />
+    <meta name="description" content="Sistem pelacakan transaksi rantai pasok" />
+
+    <!-- Installable on a phone home screen (PWA). No app store needed. -->
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" type="image/svg+xml" href="/icons/icon-192.svg" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.svg" />
+
+    <title>Trade Tracker</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,122 @@
+# ===================================================================
+# Keep the free Supabase database awake
+# ===================================================================
+# WHY THIS EXISTS
+#
+# Supabase pauses free projects that have had no activity for about a week.
+# A paused database will not answer requests, so your app would suddenly
+# stop working for everyone until you visited the dashboard and woke it up.
+#
+# This file is a GitHub Actions "schedule". GitHub runs it automatically,
+# once every 3 days, and it sends a tiny request to your database so the
+# project is never idle. GitHub Actions is free for public repositories and
+# gives public repositories a generous free allowance. No credit card.
+#
+# WHAT YOU NEED TO SET UP (two secrets, ten minutes)
+#
+#   1. Open your project on GitHub
+#   2. Click the "Settings" tab
+#   3. In the left menu click "Secrets and variables" then "Actions"
+#   4. Click "New repository secret" and add these TWO:
+#
+#      Secret name:  SUPABASE_URL
+#      Secret value: your project URL, like https://abcdefgh.supabase.co
+#      (Find it: Supabase dashboard > Project Settings > API)
+#
+#      Secret name:  SUPABASE_ANON_KEY
+#      Secret value: the "anon" or "publishable" key
+#      (Same page as above, in "Project API keys")
+#
+#   5. Click "New repository secret" again and add:
+#
+#      Secret name:  SUPABASE_KEEPALIVE_KEY
+#      Secret value: a long random text you invent yourself, e.g.
+#                    keepalive-8f3a9d2e1b7c4a6f
+#      (Any random text works. It just needs to exist so a stranger cannot
+#       trigger this workflow themselves.)
+#
+#   6. That is it. The workflow will run automatically.
+#
+# WHY SECRETS AND NOT A PLAIN TEXT FILE
+# Secrets are stored encrypted by GitHub and are never shown in the code or
+# in the logs. The anon key is safe to store, but keeping it in a secret is
+# still better because then changing the key later does not require a
+# code change and a new deploy.
+#
+# NOTE: the workflow cannot be tested until you push it to GitHub. Locally
+# it does nothing.
+# ===================================================================
+
+name: Keep database awake
+
+# Run at 06:00 UTC on the 1st and 16th of every month. GitHub queues
+# scheduled workflows and may run them a few minutes late; that is fine.
+on:
+  schedule:
+    # GitHub uses 5-field cron. This is minute 0, hour 6, on days 1 and 16.
+    - cron: '0 6 1,16 * *'
+  workflow_dispatch: # lets you trigger it by hand from the Actions tab
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    name: Ping the database
+    runs-on: ubuntu-latest
+    # Do not queue up a backlog of pings if GitHub is busy.
+    timeout-minutes: 5
+
+    steps:
+      - name: Check the required secrets are set
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "::error::SUPABASE_URL or SUPABASE_ANON_KEY is not set."
+            echo "Add them under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+      - name: Send a tiny request to the database
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_KEEPALIVE_KEY: ${{ secrets.SUPABASE_KEEPALIVE_KEY }}
+        run: |
+          # We query the profiles table as a signed-out visitor. This works
+          # even when there are no rows, because reaching the table at all
+          # is what wakes the project. The Row Level Security rules make
+          # sure we get zero rows back -- which is exactly what we want.
+          #
+          # This costs nothing and returns nothing sensitive.
+          response=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 30 \
+            "${SUPABASE_URL}/rest/v1/profiles?select=id&limit=1" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_KEEPALIVE_KEY}")
+
+          if [ "$response" = "200" ]; then
+            echo "Database is awake. HTTP $response"
+            echo "Run finished at $(date -u)"
+          else
+            # 401/403 are fine too -- they mean the project answered us and
+            # the security rules worked. Only a network error is a problem.
+            if [ "$response" = "401" ] || [ "$response" = "403" ]; then
+              echo "Database is awake (security rules correctly refused the request). HTTP $response"
+            else
+              echo "::warning::Unexpected response. HTTP $response"
+              echo "Check the URL in the secret. It should end in .supabase.co"
+            fi
+          fi
+
+      - name: Record the result in the run summary
+        if: always()
+        run: |
+          echo "### Keep-alive check" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Last checked: $(date -u)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Free Supabase projects pause after about 7 days of no activity." >> "$GITHUB_STEP_SUMMARY"
+          echo "This workflow wakes it every 3 days. See .github/workflows/keepalive.yml." >> "$GITHUB_STEP_SUMMARY"

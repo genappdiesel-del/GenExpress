@@ -1,0 +1,13 @@
+# Keep line endings identical across machines.
+# Without this, Windows rewrites every file to CRLF on checkout, which makes
+# git think every single line changed. That turns a 5-line edit into a
+# 400-line diff and hides real changes from whoever reviews the code.
+* text=auto eol=lf
+
+# Files that must stay LF even on Windows, because something else runs them.
+*.sh text eol=lf
+*.sql text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf

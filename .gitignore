@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+.next/
+out/
+dist/
+build/
+.turbo/
+
+# Environment
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Test output
+coverage/
+playwright-report/
+test-results/
+# Agent tooling, not app code.
+# The 127 installed skills are reproducible from skills-lock.json with:
+#   npx skills update
+# Committing ~900 vendored files would bloat every clone for no benefit.
+.agents/
+
+# Local agent state and memory. Machine-specific, not shared.
+.opencode/

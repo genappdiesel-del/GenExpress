@@ -1,0 +1,227 @@
+@import 'tailwindcss';
+
+/* ===================================================================
+   Design tokens
+   ===================================================================
+   Colours are defined once here and used everywhere by name. If the brand
+   colour changes, it changes in one place.
+
+   Colour meanings are fixed across the whole app so people learn them once:
+     green  = good, paid, ready, completed
+     amber  = needs attention, partial, low stock
+     red    = problem, unpaid, failed, not ready
+   Never use red for something that is merely unimportant, or people will
+   stop trusting it.
+   =================================================================== */
+@theme {
+  --color-brand-50: #f0fdfa;
+  --color-brand-100: #ccfbf1;
+  --color-brand-200: #99f6e4;
+  --color-brand-500: #14b8a6;
+  --color-brand-600: #0d9488;
+  --color-brand-700: #0f766e;
+  --color-brand-800: #115e59;
+  --color-brand-900: #134e4a;
+
+  --color-ok-50: #f0fdf4;
+  --color-ok-600: #16a34a;
+  --color-ok-700: #15803d;
+
+  --color-warn-50: #fffbeb;
+  --color-warn-600: #d97706;
+  --color-warn-700: #b45309;
+
+  --color-danger-50: #fef2f2;
+  --color-danger-600: #dc2626;
+  --color-danger-700: #b91c1c;
+}
+
+/* ===================================================================
+   Custom utilities
+   ===================================================================
+   Tailwind v4 uses @utility, not @layer components, for classes you want to
+   be able to @apply elsewhere. @apply only understands real utilities, so
+   defining btn as a plain component class and then applying it would fail.
+
+   Sizes are chosen for fingers: 44px is the minimum comfortable touch
+   target on a phone, and 16px text stops iOS zooming when an input is
+   tapped.
+   =================================================================== */
+
+@utility btn {
+  display: inline-flex;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 0.5rem;
+  padding-inline: 1rem;
+  font-size: 1rem;
+  font-weight: 600;
+  transition: colors 150ms;
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+}
+
+@utility btn-primary {
+  composes: btn;
+  background-color: var(--color-brand-700);
+  color: #fff;
+
+  &:hover:not(:disabled) {
+    background-color: var(--color-brand-800);
+  }
+}
+
+@utility btn-secondary {
+  composes: btn;
+  border: 1px solid var(--color-slate-300);
+  background-color: #fff;
+  color: var(--color-slate-700);
+
+  &:hover:not(:disabled) {
+    background-color: var(--color-slate-50);
+  }
+}
+
+@utility btn-danger {
+  composes: btn;
+  background-color: var(--color-danger-600);
+  color: #fff;
+
+  &:hover:not(:disabled) {
+    background-color: var(--color-danger-700);
+  }
+}
+
+@utility field {
+  display: block;
+  width: 100%;
+  min-height: 2.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--color-slate-300);
+  background-color: #fff;
+  padding: 0.5rem 0.75rem;
+  font-size: 1rem;
+
+  &::placeholder {
+    color: var(--color-slate-400);
+  }
+
+  &:focus {
+    border-color: var(--color-brand-600);
+    outline: none;
+    box-shadow: 0 0 0 2px rgb(15 118 110 / 20%);
+  }
+
+  &:disabled {
+    background-color: var(--color-slate-100);
+  }
+}
+
+@utility label {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-slate-700);
+}
+
+@utility card {
+  border-radius: 0.75rem;
+  border: 1px solid var(--color-slate-200);
+  background-color: #fff;
+  padding: 1rem;
+  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 5%);
+}
+
+@utility badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  padding-inline: 0.625rem;
+  padding-block: 0.125rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+/* Bottom navigation on phones. Sits above the home bar on modern phones. */
+@utility nav-bottom {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 40;
+  border-top: 1px solid var(--color-slate-200);
+  background-color: #fff;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Content above the bottom navigation. Without this the last row of a list
+   hides behind the nav bar. */
+@utility pb-safe-nav {
+  padding-bottom: calc(4.5rem + env(safe-area-inset-bottom));
+}
+
+/* Side navigation on desktop. */
+@utility nav-side {
+  display: none;
+  width: 15rem;
+  flex-shrink: 0;
+  border-right: 1px solid var(--color-slate-200);
+  background-color: #fff;
+  padding: 1rem;
+
+  @media (min-width: 64rem) {
+    display: block;
+  }
+}
+
+/* ===================================================================
+   Base
+   =================================================================== */
+@layer base {
+  html {
+    /* Stop iOS zooming when someone taps an input on a small phone.
+       Anything under 16px triggers zoom on iOS, which is very annoying. */
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-slate-50);
+    color: var(--color-slate-900);
+    -webkit-font-smoothing: antialiased;
+    /* Respect the phone's notch and home bar. */
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+
+  /* A visible focus ring matters. Many users navigate with a keyboard or
+     assistive tech, and a hidden focus state makes the app unusable for
+     them. Never remove this without replacing it. */
+  :focus-visible {
+    outline: 2px solid var(--color-brand-600);
+    outline-offset: 2px;
+  }
+
+  /* Stop iOS flashing a grey box when someone taps a button. */
+  button {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* Reduce motion for people who have asked their phone to stop animating.
+   This is an accessibility requirement, not a nicety. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
