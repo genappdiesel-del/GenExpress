@@ -59,6 +59,7 @@ import {
   type ClientFeatureFlags,
   type FeatureFlagKey,
 } from '../../types/database'
+import { makeT } from '../../i18n'
 
 /** The nine switches, in the order a Supplier thinks about them: what
  *  they can see, what they can do, what history they can read. */
@@ -73,7 +74,7 @@ export function SupplierClientPermissions({
   supplierId,
   language,
 }: SupplierClientPermissionsProps) {
-  const t = (id: string, en: string) => (language === 'id' ? id : en)
+  const t = makeT(language)
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -293,9 +294,14 @@ function SwitchPanel({
   return (
     <div className="card">
       <div className="mb-3 flex items-start justify-between gap-2">
-        <h2 className="text-base font-semibold text-slate-900">
-          {client.full_name}
-        </h2>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-base font-semibold text-slate-900">
+            {client.full_name}
+          </h2>
+          <p className="truncate text-xs text-slate-500">
+            {t('Level', 'Level')} {client.level}
+          </p>
+        </div>
 
         {/* How much this person can see, in one glance. Counting the
             switches is useful; reading nine of them is not. */}

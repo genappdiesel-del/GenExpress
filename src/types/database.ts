@@ -33,6 +33,15 @@ export type Profile = {
   role: UserRole
   /** Only used for client and agent. Suppliers and super admins have null. */
   supplier_id: string | null
+  /**
+   * Who recruited this person. Migration 014.
+   *
+   * Empty means they sit straight under the Supplier (level 2). This is
+   * for drawing the team tree and working out a level -- it is NOT used
+   * for security. Every security rule reads supplier_id, which stays
+   * correct at every depth.
+   */
+  parent_id: string | null
   full_name: string
   username: string
   phone: string | null
@@ -60,7 +69,7 @@ export type AuditLog = {
  *  Built from a VIEW, not a query against profiles. The Super Admin's
  *  account list has to show which Supplier each Client and Agent belongs
  *  to, and profiles stores that only as a raw uuid. A view can join it
- *  to a name. See migration 012.
+ *  to a name. See migration 012 (updated by 016 to add level).
  */
 export type AccountListRow = {
   id: string
@@ -73,6 +82,8 @@ export type AccountListRow = {
   is_active: boolean
   must_change_password: boolean
   created_at: string
+  /** Chain level (1 = Super Admin/Supplier root, up to 4 max for chain). */
+  level: number
 }
 
 /** The six switches a Supplier can set per Client.
@@ -510,6 +521,42 @@ export type Database = {
         Args: { p_user_id: string }
         Returns: undefined
       }
+      // --- The supply chain, added in migration 014 ------------------
+      /**
+       * The ROOT Supplier for any account. A Supplier is their own root;
+       * everyone else's root is one column read, not a chain walk.
+       */
+      supply_chain_root: { Args: { p_profile_id: string }; Returns: string | null }
+      /** Level of any account. 1 is the Supplier, 4 is the deepest. */
+      supply_chain_depth: { Args: { p_profile_id: string }; Returns: number }
+      /** The caller's own level. */
+      my_supply_chain_depth: { Args: Record<string, never>; Returns: number }
+      /**
+       * Everyone under one Supplier, with their level attached. Returns
+       * only ONE Supplier's rows, so there is no version of this call
+       * that can return a stranger's team.
+       */
+      supply_chain_members: {
+        Args: { p_supplier_id: string }
+        Returns: {
+          id: string
+          parent_id: string | null
+          role: UserRole
+          level: number
+          full_name: string
+          username: string
+          is_active: boolean
+        }[]
+      }
+      // --- Migration 015 --------------------------------------------
+      /**
+       * The currency of the CALLER'S OWN Supplier.
+       *
+       * No argument on purpose: it reads auth.uid(). An argument here
+       * would mean trusting the browser about whose currency to show,
+       * and the tripwire in the test suite refuses that shape.
+       */
+      my_currency: { Args: Record<string, never>; Returns: string }
     }
     Enums: {
       user_role: UserRole

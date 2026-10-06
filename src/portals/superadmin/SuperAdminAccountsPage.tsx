@@ -40,6 +40,7 @@ import {
 import { formatDate } from '../../i18n'
 import { listAccounts, setAccountActive, type Result } from '../../lib/accounts'
 import type { AccountListRow, Profile, UserRole } from '../../types/database'
+import { makeT } from '../../i18n'
 
 export interface SuperAdminAccountsProps {
   profile: Profile
@@ -50,7 +51,7 @@ export function SuperAdminAccounts({
   profile,
   language,
 }: SuperAdminAccountsProps) {
-  const t = (id: string, en: string) => (language === 'id' ? id : en)
+  const t = makeT(language)
 
   const [formOpen, setFormOpen] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
@@ -284,6 +285,10 @@ function AccountList({
                         {t('dari', 'from')} {account.supplier_name}
                       </span>
                     )}
+
+                    <span className="truncate">
+                      {t('Level', 'Level')} {account.level}
+                    </span>
                   </p>
                 </div>
 

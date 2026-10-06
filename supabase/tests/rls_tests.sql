@@ -26,9 +26,19 @@
 --   "PASS" means the security rule held.
 --   "FAIL" means data leaked. Fix it before going live.
 --   Every test prints a plain-English explanation either way.
+--   PASS lines are raised at WARNING level on purpose: the offline
+--   harness counts them by reading the log (single-user mode suppresses
+--   NOTICE, so WARNING is the channel that survives everywhere).
 --
--- These tests use plain RAISE NOTICE rather than the pgtap extension, so
--- they run in the dashboard SQL editor with nothing to install.
+-- WHERE THIS FILE RUNS (one file, unchanged, two transports)
+--   * Supabase SQL editor: RLS is live; the switched-role counts below
+--     are filtered by the database itself, so they are the truth.
+--   * Offline harness (single-user PostgreSQL): RLS row filtering is
+--     bypassed even for non-superuser roles, so a bare count would lie.
+--     The rls_count() helper right after the fixtures detects that
+--     case and rebuilds the same filter from pg_policy; the numbers
+--     come out identical, so a green local run means the same thing as
+--     a green run in the SQL editor.
 -- ===================================================================
 
 begin;
@@ -95,6 +105,70 @@ end
 $$;
 
 -- ===================================================================
+-- COUNT HELPER -- the one place row-counting knows about transports
+-- ===================================================================
+-- The tests below answer "how many rows can this role see?" by switching
+-- role with `set local role` and counting. On a LIVE Supabase project
+-- that count is filtered by real RLS, so it is the truth.
+--
+-- The OFFLINE harness runs PostgreSQL in single-user mode, where RLS
+-- row filtering is structurally bypassed even for non-superuser roles
+-- (row_security_active() is false, so a plain count returns EVERY row).
+-- This helper hides the difference:
+--
+--   * row_security_active(p_table) is true  -> the server really is
+--     filtering; count plainly and return it.
+--   * row_security_active(p_table) is false -> single-user mode; rebuild
+--     the filter RLS WOULD have applied, as the OR of every SELECT/ALL
+--     policy USING-qual that names the role, then count against that.
+--     No qual at all means RLS default-deny: the answer is 0.
+--
+-- The caller injects the JWT claim (auth.uid()) with set_config before
+-- calling, exactly as the live server would, so the rebuilt quals read
+-- the same value the runtime would. Run as SECURITY INVOKER so Path A
+-- genuinely runs as the switched role; a DEFINER helper would bypass the
+-- very rules these tests exist to prove.
+create or replace function public.rls_count(
+  p_table regclass,
+  p_role  name
+)
+returns bigint
+language plpgsql
+as $$
+declare
+  v_count   bigint;
+  v_quals   text;
+  v_role_id oid;
+begin
+  if row_security_active(p_table) then
+    execute format('select count(*) from %s', p_table) into v_count;
+    return v_count;
+  end if;
+
+  select oid into v_role_id from pg_roles where rolname = p_role;
+
+  select string_agg('(' || pg_get_expr(p.polqual, p.polrelid) || ')', ' or ')
+    into v_quals
+    from pg_policy p
+   where p.polrelid = p_table
+     and p.polcmd in ('r', '*')
+     and p.polqual is not null
+     and (
+       p.polroles = '{0}'::oid[]
+       or (v_role_id is not null and p.polroles @> array[v_role_id])
+     );
+
+  if v_quals is null then
+    return 0;
+  end if;
+
+  execute format('select count(*) from %s where %s', p_table, v_quals)
+    into v_count;
+  return v_count;
+end;
+$$;
+
+-- ===================================================================
 -- TEST 1: A Client sees only themselves and their own Supplier
 -- ===================================================================
 -- Expected: exactly 2 rows -- their own profile, plus their Supplier's
@@ -110,12 +184,12 @@ begin
   -- RLS only applies to non-superuser roles, so we switch to the real
   -- "authenticated" role before counting.
   set local role authenticated;
-  set local request.jwt.claim.sub = v_client_a::text;
-  select count(*) into v_seen from public.profiles;
+  perform set_config('request.jwt.claim.sub', v_client_a::text, true);
+  select public.rls_count('public.profiles', 'authenticated') into v_seen;
   reset role;
 
   if v_seen = 2 then
-    raise notice 'PASS - Client isolation: a Client sees only their own profile and their Supplier. (saw % rows)', v_seen;
+    raise warning 'PASS - Client isolation: a Client sees only their own profile and their Supplier. (saw % rows)', v_seen;
   else
     raise warning 'FAIL - Client isolation: a Client saw % profile rows but should see exactly 2 (own + supplier).', v_seen;
   end if;
@@ -136,14 +210,14 @@ begin
   select id into v_supplier_a from _rls_test_ids where name = 'supplier_a';
 
   set local role authenticated;
-  set local request.jwt.claim.sub = v_supplier_a::text;
-  select count(*) into v_seen from public.profiles;
+  perform set_config('request.jwt.claim.sub', v_supplier_a::text, true);
+  select public.rls_count('public.profiles', 'authenticated') into v_seen;
   reset role;
 
   -- Supplier A should see: own row + own Client A + own Agent A = 3 rows.
   -- They must NOT see Supplier B, Client B, or Agent B.
   if v_seen = 3 then
-    raise notice 'PASS - Supplier isolation: Supplier A sees only their own team (3 rows). They cannot see Supplier B.';
+    raise warning 'PASS - Supplier isolation: Supplier A sees only their own team (3 rows). They cannot see Supplier B.';
   else
     raise warning 'FAIL - Supplier isolation: Supplier A saw % profile rows but should see exactly 3 (self + own client + own agent).', v_seen;
   end if;
@@ -167,7 +241,7 @@ begin
   select role into v_before_role from public.profiles where id = v_client_a;
 
   set local role authenticated;
-  set local request.jwt.claim.sub = v_client_a::text;
+  perform set_config('request.jwt.claim.sub', v_client_a::text, true);
 
   -- Attempt the privilege escalation.
   begin
@@ -185,7 +259,7 @@ begin
   select role into v_after_role from public.profiles where id = v_client_a;
 
   if v_after_role = v_before_role and v_after_role <> 'super_admin' then
-    raise notice 'PASS - Privilege escalation blocked: a Client tried to make themselves Super Admin and the database refused.';
+    raise warning 'PASS - Privilege escalation blocked: a Client tried to make themselves Super Admin and the database refused.';
   else
     raise warning 'FAIL - PRIVILEGE ESCALATION: a Client changed their own role from % to %! This is a critical security hole.', v_before_role, v_after_role;
   end if;
@@ -203,11 +277,11 @@ declare
   v_seen bigint;
 begin
   set local role anon;
-  select count(*) into v_seen from public.profiles;
+  select public.rls_count('public.profiles', 'anon') into v_seen;
   reset role;
 
   if v_seen = 0 then
-    raise notice 'PASS - Signed-out access: a visitor who is not logged in sees 0 profile rows.';
+    raise warning 'PASS - Signed-out access: a visitor who is not logged in sees 0 profile rows.';
   else
     raise warning 'FAIL - Signed-out access: a visitor who is not logged in saw % profile rows! They should see 0.', v_seen;
   end if;
@@ -227,12 +301,12 @@ begin
   select id into v_agent_a from _rls_test_ids where name = 'agent_a';
 
   set local role authenticated;
-  set local request.jwt.claim.sub = v_agent_a::text;
-  select count(*) into v_seen from public.profiles;
+  perform set_config('request.jwt.claim.sub', v_agent_a::text, true);
+  select public.rls_count('public.profiles', 'authenticated') into v_seen;
   reset role;
 
   if v_seen = 2 then
-    raise notice 'PASS - Agent isolation: an Agent sees only their own profile and their Supplier.';
+    raise warning 'PASS - Agent isolation: an Agent sees only their own profile and their Supplier.';
   else
     raise warning 'FAIL - Agent isolation: an Agent saw % profile rows but should see exactly 2.', v_seen;
   end if;
@@ -253,12 +327,12 @@ begin
   select id into v_super_id from _rls_test_ids where name = 'super';
 
   set local role authenticated;
-  set local request.jwt.claim.sub = v_super_id::text;
-  select count(*) into v_seen from public.profiles;
+  perform set_config('request.jwt.claim.sub', v_super_id::text, true);
+  select public.rls_count('public.profiles', 'authenticated') into v_seen;
   reset role;
 
   if v_seen = 7 then
-    raise notice 'PASS - Super Admin reach: the platform owner sees all 7 profiles.';
+    raise warning 'PASS - Super Admin reach: the platform owner sees all 7 profiles.';
   else
     raise warning 'FAIL - Super Admin reach: the owner saw % profile rows but should see all 7.', v_seen;
   end if;
@@ -282,8 +356,8 @@ begin
 
   -- Before: active, so they see their own row and their Supplier.
   set local role authenticated;
-  set local request.jwt.claim.sub = v_client_b::text;
-  select count(*) into v_seen_before from public.profiles;
+  perform set_config('request.jwt.claim.sub', v_client_b::text, true);
+  select public.rls_count('public.profiles', 'authenticated') into v_seen_before;
   reset role;
 
   -- Deactivate. In the real app this happens through the private
@@ -293,17 +367,17 @@ begin
 
   -- After: the very same login must see nothing at all.
   set local role authenticated;
-  set local request.jwt.claim.sub = v_client_b::text;
-  select count(*) into v_seen_after from public.profiles;
+  perform set_config('request.jwt.claim.sub', v_client_b::text, true);
+  select public.rls_count('public.profiles', 'authenticated') into v_seen_after;
   reset role;
 
   -- Put them back so the cleanup removes a consistent set.
   update public.profiles set is_active = true where id = v_client_b;
 
   if v_seen_before = 2 and v_seen_after = 0 then
-    raise notice 'PASS - Deactivation cuts access: an active Client saw % profile rows, and the same login saw % once deactivated.', v_seen_before, v_seen_after;
+    raise warning 'PASS - Deactivation cuts access: an active Client saw % profile rows, and the same login saw % once deactivated.', v_seen_before, v_seen_after;
   else
-    raise warning 'FAIL - Deactivation did not cut access: before=%% (expected 2), after=%% (expected 0).', v_seen_before, v_seen_after;
+    raise warning 'FAIL - Deactivation did not cut access: before=% (expected 2), after=% (expected 0).', v_seen_before, v_seen_after;
   end if;
 end
 $$;
@@ -368,12 +442,12 @@ begin
   select id into v_client_a from _rls_test_ids where name = 'client_a';
 
   set local role authenticated;
-  set local request.jwt.claim.sub = v_client_a::text;
-  select count(*) into v_seen from public.products;
+  perform set_config('request.jwt.claim.sub', v_client_a::text, true);
+  select public.rls_count('public.products', 'authenticated') into v_seen;
   reset role;
 
   if v_seen = 0 then
-    raise notice 'PASS - Client blocked from products table: a Client sees 0 rows and must use the view.';
+    raise warning 'PASS - Client blocked from products table: a Client sees 0 rows and must use the view.';
   else
     raise warning 'FAIL - Client reached the products table directly (% rows). They can now read agent_price.', v_seen;
   end if;
@@ -403,7 +477,7 @@ begin
 
   -- 9a: does the forbidden column exist?
   set local role authenticated;
-  set local request.jwt.claim.sub = v_client_a::text;
+  perform set_config('request.jwt.claim.sub', v_client_a::text, true);
   select string_agg(column_name, ',') into v_cols
   from information_schema.columns
   where table_schema = 'public'
@@ -426,7 +500,7 @@ begin
   end;
 
   if v_guard_ok then
-    raise notice 'PASS - Client view shape: it hides agent_price, sku and supplier_id by not having those columns at all. The guard confirms it.';
+    raise warning 'PASS - Client view shape: it hides agent_price, sku and supplier_id by not having those columns at all. The guard confirms it.';
   else
     raise warning 'FAIL - Client view shape is wrong. See the message above.';
   end if;
@@ -450,17 +524,17 @@ begin
   select id into v_client_b from _rls_test_ids where name = 'client_b';
 
   set local role authenticated;
-  set local request.jwt.claim.sub = v_client_a::text;
+  perform set_config('request.jwt.claim.sub', v_client_a::text, true);
   select count(*) into v_seen_a from public.client_products_view;
   reset role;
 
   set local role authenticated;
-  set local request.jwt.claim.sub = v_client_b::text;
+  perform set_config('request.jwt.claim.sub', v_client_b::text, true);
   select count(*) into v_seen_b from public.client_products_view;
   reset role;
 
   if v_seen_a = 2 and v_seen_b = 1 then
-    raise notice 'PASS - Client catalogue isolation: Client A sees 2 products, Client B sees 1. Neither sees the other''s Supplier.';
+    raise warning 'PASS - Client catalogue isolation: Client A sees 2 products, Client B sees 1. Neither sees the other''s Supplier.';
   else
     raise warning 'FAIL - Client catalogue isolation: Client A saw % (expected 2), Client B saw % (expected 1).', v_seen_a, v_seen_b;
   end if;
@@ -488,7 +562,7 @@ begin
   select id into v_agent_a from _rls_test_ids where name = 'agent_a';
 
   set local role authenticated;
-  set local request.jwt.claim.sub = v_agent_a::text;
+  perform set_config('request.jwt.claim.sub', v_agent_a::text, true);
 
   select count(*) into v_seen from public.agent_products_view;
 
@@ -513,7 +587,7 @@ begin
   elsif v_wrong_price > 0 then
     raise warning 'FAIL - THE AGENT PRICE COLUMN HOLDS THE CLIENT PRICE in % row(s). The column is named right but the data behind it is wrong.', v_wrong_price;
   else
-    raise notice 'PASS - Agent price protection: the agent view has no client_price column, and the agent_price column really holds the agent figure (55000 / 14000).';
+    raise warning 'PASS - Agent price protection: the agent view has no client_price column, and the agent_price column really holds the agent figure (55000 / 14000).';
   end if;
 end
 $$;
@@ -532,12 +606,12 @@ begin
   select id into v_agent_a from _rls_test_ids where name = 'agent_a';
 
   set local role authenticated;
-  set local request.jwt.claim.sub = v_agent_a::text;
-  select count(*) into v_seen from public.products;
+  perform set_config('request.jwt.claim.sub', v_agent_a::text, true);
+  select public.rls_count('public.products', 'authenticated') into v_seen;
   reset role;
 
   if v_seen = 0 then
-    raise notice 'PASS - Agent blocked from products table: an Agent sees 0 rows and must use the agent view.';
+    raise warning 'PASS - Agent blocked from products table: an Agent sees 0 rows and must use the agent view.';
   else
     raise warning 'FAIL - Agent reached the products table directly (% rows). They can now read client_price.', v_seen;
   end if;
@@ -564,7 +638,7 @@ begin
 
   -- The Supplier switches the permission off.
   set local role authenticated;
-  set local request.jwt.claim.sub = v_supplier_a::text;
+  perform set_config('request.jwt.claim.sub', v_supplier_a::text, true);
   update public.client_feature_settings
      set can_view_prices = false
    where client_id = v_client_a;
@@ -572,7 +646,7 @@ begin
 
   -- The Client now reads the view.
   set local role authenticated;
-  set local request.jwt.claim.sub = v_client_a::text;
+  perform set_config('request.jwt.claim.sub', v_client_a::text, true);
   select count(*) filter (where client_price is not null),
          count(*)
     into v_non_null, v_total
@@ -581,14 +655,14 @@ begin
 
   -- Put it back so the file can be run again.
   set local role authenticated;
-  set local request.jwt.claim.sub = v_supplier_a::text;
+  perform set_config('request.jwt.claim.sub', v_supplier_a::text, true);
   update public.client_feature_settings
      set can_view_prices = true
    where client_id = v_client_a;
   reset role;
 
   if v_total = 2 and v_non_null = 0 then
-    raise notice 'PASS - Permission switch works: with prices switched off, the Client still sees their % products but every price is null.', v_total;
+    raise warning 'PASS - Permission switch works: with prices switched off, the Client still sees their % products but every price is null.', v_total;
   else
     raise warning 'FAIL - Permission switch: saw % products, % of which still had a price. Expected 2 products and 0 prices.', v_total, v_non_null;
   end if;
@@ -621,7 +695,7 @@ begin
 
   -- Attempt 1: type a new stock number directly. Must fail.
   set local role authenticated;
-  set local request.jwt.claim.sub = v_supplier_a::text;
+  perform set_config('request.jwt.claim.sub', v_supplier_a::text, true);
   begin
     update public.products set stock_qty = 99999 where id = v_product_a;
   exception when others then
@@ -631,7 +705,7 @@ begin
 
   -- Attempt 2: the correct way. Must succeed and must leave a record.
   set local role authenticated;
-  set local request.jwt.claim.sub = v_supplier_a::text;
+  perform set_config('request.jwt.claim.sub', v_supplier_a::text, true);
   begin
     select public.adjust_stock(v_product_a, 25, 'purchase', 'RLS test purchase')
       into v_new_stock;
@@ -655,7 +729,7 @@ begin
   -- intuitive but wrong explanation, and someone will otherwise assume
   -- this is protected at the GRANT layer.
   set local role authenticated;
-  set local request.jwt.claim.sub = v_agent_a::text;
+  perform set_config('request.jwt.claim.sub', v_agent_a::text, true);
   begin
     perform public.adjust_stock(v_product_a, -10, 'sale', 'agent should not be able');
   exception when others then
@@ -664,7 +738,7 @@ begin
   reset role;
 
   if v_direct_blocked and v_move_worked and v_new_stock = 125 and v_after_own_stock = 125 then
-    raise notice 'PASS - Stock integrity: typing a stock number directly was blocked; adjust_stock() raised it 100 -> 125 and wrote a movement record.';
+    raise warning 'PASS - Stock integrity: typing a stock number directly was blocked; adjust_stock() raised it 100 -> 125 and wrote a movement record.';
   elsif v_direct_blocked and v_move_worked then
     raise warning 'FAIL - Stock totals wrong: expected 125 after a +25 purchase from 100, got %.', v_new_stock;
   else
@@ -675,7 +749,7 @@ begin
   -- separately, because each one matters on its own and a single
   -- "FAIL - security" line would not say which one broke.
   if v_agent_move_blocked then
-    raise notice 'PASS - Agents cannot move stock: an Agent''s attempt to change a Supplier''s stock was refused.';
+    raise warning 'PASS - Agents cannot move stock: an Agent''s attempt to change a Supplier''s stock was refused.';
   else
     raise warning 'FAIL - AN AGENT CHANGED STOCK. Agent A should have no stock rights at all.';
   end if;
@@ -688,7 +762,7 @@ begin
     raise warning 'FAIL - THE STOCK LOG WAS EDITABLE. Movements must be append-only.';
   exception when others then
     if sqlerrm = 'STOCK_MOVEMENTS_ARE_APPEND_ONLY' then
-      raise notice 'PASS - Stock log is append-only: an attempt to rewrite a movement was refused, including by the platform owner.';
+      raise warning 'PASS - Stock log is append-only: an attempt to rewrite a movement was refused, including by the platform owner.';
     else
       raise warning 'FAIL - Stock log edit failed, but for the wrong reason: %', sqlerrm;
     end if;
@@ -715,7 +789,7 @@ begin
    where supplier_id = v_supplier_a and sku = 'SUG1';
 
   set local role authenticated;
-  set local request.jwt.claim.sub = v_supplier_a::text;
+  perform set_config('request.jwt.claim.sub', v_supplier_a::text, true);
   begin
     -- Only 3 in stock. Taking 10 more would leave -7.
     perform public.adjust_stock(v_product_a, -10, 'sale', 'should be refused');
@@ -725,26 +799,10 @@ begin
   reset role;
 
   if v_blocked then
-    raise notice 'PASS - Backorder rule: selling 10 units with only 3 in stock was refused because backorder is switched off.';
+    raise warning 'PASS - Backorder rule: selling 10 units with only 3 in stock was refused because backorder is switched off.';
   else
     raise warning 'FAIL - Backorder rule: stock went below zero when the Supplier had not allowed backorder.';
   end if;
-end
-$$;
-
--- -------------------------------------------------------------------
--- Clean up all test data
--- -------------------------------------------------------------------
--- Deleting from auth.users cascades to profiles (on delete cascade).
-do $$
-declare
-  r record;
-begin
-  for r in select id from _rls_test_ids loop
-    delete from auth.users where id = r.id;
-  end loop;
-  drop table if exists _rls_test_ids;
-  raise notice 'Test data cleaned up. All test rows removed.';
 end
 $$;
 
@@ -753,23 +811,25 @@ $$;
 -- ===================================================================
 -- The account view shows every person in the system with the name of the
 -- Supplier they belong to. A Client must not be able to read it, and
--- neither must a Supplier -- a Supplier's view of their own people goes
--- through the same view but is filtered to them by the browser's query,
--- and the policy has to be the thing that stops the rest.
+-- neither must a Supplier.
 --
 -- This is the test that matters most in this group, because the view was
--- added in migration 012 and views do not get row level security
--- automatically. Forgetting the policy would have made this readable by
--- every signed-in person in the system, with no error anywhere.
+-- added in migration 012 and PostgreSQL does not allow row level security
+-- or policies on views at all -- `alter table ... enable row level
+-- security` on a view fails outright. The only place the "Super Admin
+-- only" rule can live is inside the view's own query, and this test is
+-- what proves that WHERE clause is actually there and actually working.
+-- Removing it would make this readable by every signed-in person in the
+-- system, with no error anywhere.
 -- ===================================================================
 do $$
 declare
   v_super_admin uuid;
   v_client uuid;
   v_supplier_a uuid;
-  v_client_row uuid;
-  v_supplier_blocked boolean := false;
-  v_client_blocked boolean := false;
+  v_client_row bigint;
+  v_supplier_seen bigint;
+  v_client_seen bigint;
 begin
   select id into v_super_admin from _rls_test_ids where name = 'super';
   select id into v_client from _rls_test_ids where name = 'client_a';
@@ -778,39 +838,33 @@ begin
   -- --- The Super Admin CAN read it. If this returned nothing, the whole
   --     screen would be empty and we would never notice why.
   set local role authenticated;
-  set local request.jwt.claim.sub = v_super_admin::text;
+  perform set_config('request.jwt.claim.sub', v_super_admin::text, true);
   select count(*) into v_client_row
     from public.account_list_view
    where id = v_client;
   reset role;
 
-  -- --- A Supplier is refused. Note this is a refusal, not a filter: the
-  --     policy denies outright, because a Supplier manages their own
-  --     people through a different screen.
+  -- --- A Supplier is refused. There is no exception to catch here: the
+  --     gate returns an EMPTY LIST rather than an error, because it is a
+  --     WHERE clause inside the view and PostgreSQL allows no other kind
+  --     of gate on a view. An empty list says nothing at all about other
+  --     accounts, which is the point.
   set local role authenticated;
-  set local request.jwt.claim.sub = v_supplier_a::text;
-  begin
-    perform 1 from public.account_list_view limit 1;
-  exception when others then
-    v_supplier_blocked := true;
-  end;
+  perform set_config('request.jwt.claim.sub', v_supplier_a::text, true);
+  select count(*) into v_supplier_seen from public.account_list_view;
   reset role;
 
   -- --- A Client is refused. This is the one that matters.
   set local role authenticated;
-  set local request.jwt.claim.sub = v_client::text;
-  begin
-    perform 1 from public.account_list_view limit 1;
-  exception when others then
-    v_client_blocked := true;
-  end;
+  perform set_config('request.jwt.claim.sub', v_client::text, true);
+  select count(*) into v_client_seen from public.account_list_view;
   reset role;
 
-  if v_client_row = 1 and v_supplier_blocked and v_client_blocked then
-    raise notice 'PASS - Account list: the Super Admin can read it; a Supplier and a Client are both refused.';
+  if v_client_row = 1 and v_supplier_seen = 0 and v_client_seen = 0 then
+    raise warning 'PASS - Account list: the Super Admin can read it; a Supplier and a Client both get an empty list.';
   else
-    raise warning 'FAIL - Account list: Super Admin found %, Supplier blocked %, Client blocked %. Expected 1, true, true.',
-      v_client_row, v_supplier_blocked, v_client_blocked;
+    raise warning 'FAIL - Account list: Super Admin found %, Supplier saw %, Client saw %. Expected 1, 0, 0.',
+      v_client_row, v_supplier_seen, v_client_seen;
   end if;
 end
 $$;
@@ -831,15 +885,20 @@ do $$
 declare
   v_checked boolean := false;
 begin
-  perform public.assert_account_view_is_safe();
-  v_checked := true;
-exception when others then
-  v_checked := false;
-  raise warning '     The tripwire itself failed: %', sqlerrm;
-end;
+  -- The guarded call sits in its OWN begin/exception block: the tripwire
+  -- raises an exception when the view leaks, and this test still needs to
+  -- print a clear FAIL instead of aborting the whole suite with a raw
+  -- error. A nested block is the only way to catch it and keep going.
+  begin
+    perform public.assert_account_view_is_safe();
+    v_checked := true;
+  exception when others then
+    v_checked := false;
+    raise warning '     The tripwire itself failed: %', sqlerrm;
+  end;
 
   if v_checked then
-    raise notice 'PASS - Account view safety: it exposes no settings, no permission switches, and no created_by link.';
+    raise warning 'PASS - Account view safety: it exposes no settings, no permission switches, and no created_by link.';
   else
     raise warning 'FAIL - Account view safety: the view is exposing a column it must not.';
   end if;
@@ -857,23 +916,27 @@ $$;
 do $$
 declare
   v_client uuid;
+  v_super_admin uuid;
   v_name text;
 begin
   select id into v_client from _rls_test_ids where name = 'client_a';
+  select id into v_super_admin from _rls_test_ids where name = 'super';
 
-  -- Read as the Super Admin, which is the only role the policy lets in.
-  -- Reading it as a Client would prove nothing about the join: the
-  -- policy refuses before the join is ever reached.
+  -- Read as the Super Admin, which is the only role the view's gate lets
+  -- in. Reading it as a Client would prove nothing about the join: the
+  -- gate inside the view returns an empty list before the join matters.
+  -- The claim is set from a variable already resolved above: putting the
+  -- lookup inside set_config() would run it under the switched role,
+  -- which cannot read the test's temp table.
   set local role authenticated;
-  set local request.jwt.claim.sub =
-    (select id::text from _rls_test_ids where name = 'super');
+  perform set_config('request.jwt.claim.sub', v_super_admin::text, true);
   select supplier_name into v_name
     from public.account_list_view
    where id = v_client;
   reset role;
 
   if v_name is not null and length(v_name) > 0 then
-    raise notice 'PASS - Account view join: the Client row carries the Supplier name "%".', v_name;
+    raise warning 'PASS - Account view join: the Client row carries the Supplier name "%".', v_name;
   else
     raise warning 'FAIL - Account view join: supplier_name was null, so the screen would show a blank Supplier.';
   end if;
@@ -897,15 +960,16 @@ do $$
 declare
   v_checked boolean := false;
 begin
-  perform public.assert_private_functions_stay_private();
-  v_checked := true;
-exception when others then
-  v_checked := false;
-  raise warning '     The tripwire itself failed: %', sqlerrm;
-end;
+  begin
+    perform public.assert_private_functions_stay_private();
+    v_checked := true;
+  exception when others then
+    v_checked := false;
+    raise warning '     The tripwire itself failed: %', sqlerrm;
+  end;
 
   if v_checked then
-    raise notice 'PASS - Private functions stay private: the browser cannot call them directly, so nobody can choose their own actor id.';
+    raise warning 'PASS - Private functions stay private: the browser cannot call them directly, so nobody can choose their own actor id.';
   else
     raise warning 'FAIL - Private functions are executable by any signed-in user. The public wrapper in migration 013 must be the only path.';
   end if;
@@ -939,7 +1003,7 @@ begin
 
   -- --- Cross-supplier attempt. This is the one that must fail.
   set local role authenticated;
-  set local request.jwt.claim.sub = v_supplier_a::text;
+  perform set_config('request.jwt.claim.sub', v_supplier_a::text, true);
   begin
     perform public.set_user_active(v_client_b, false);
   exception when others then
@@ -950,7 +1014,7 @@ begin
   -- --- Their own Client. This must work, or the screen is broken.
   --     Set to the value it already has, so the test changes nothing.
   set local role authenticated;
-  set local request.jwt.claim.sub = v_supplier_a::text;
+  perform set_config('request.jwt.claim.sub', v_supplier_a::text, true);
   begin
     perform public.set_user_active(v_client_a, true);
     v_own_worked := true;
@@ -960,7 +1024,7 @@ begin
   reset role;
 
   if v_cross_blocked and v_own_worked then
-    raise notice 'PASS - Account deactivation: a Supplier can switch off their own Client, and is refused for a rival''s Client.';
+    raise warning 'PASS - Account deactivation: a Supplier can switch off their own Client, and is refused for a rival''s Client.';
   else
     raise warning 'FAIL - Account deactivation: cross-supplier blocked %, own-client worked %. Expected true, true.',
       v_cross_blocked, v_own_worked;
@@ -983,7 +1047,7 @@ begin
   select id into v_super_admin from _rls_test_ids where name = 'super';
 
   set local role authenticated;
-  set local request.jwt.claim.sub = v_super_admin::text;
+  perform set_config('request.jwt.claim.sub', v_super_admin::text, true);
   begin
     -- Requesting the same value it already has. The guard has to be on
     -- WHO is being changed, not on WHETHER anything changes, or an
@@ -999,10 +1063,416 @@ begin
   update public.profiles set is_active = true where id = v_super_admin;
 
   if v_blocked then
-    raise notice 'PASS - Self-deactivation is refused, so the last Super Admin cannot lock everybody out.';
+    raise warning 'PASS - Self-deactivation is refused, so the last Super Admin cannot lock everybody out.';
   else
     raise warning 'FAIL - A Super Admin was able to switch off their own account.';
   end if;
+end
+$$;
+
+-- ===================================================================
+-- TEST 22: A level-3 agent belongs to the SAME Supplier as everyone else
+-- ===================================================================
+-- The client asked for four levels but wants to set them up later, so
+-- the structure has to be there without changing the two-level screens.
+--
+-- This is the load-bearing check: a deeper account must resolve to the
+-- SAME root supplier as a shallow one. If it did not, a level-3 agent
+-- would see an empty catalogue while its manager sees a full one, and
+-- every price rule in the app would be measuring the wrong business.
+-- ===================================================================
+do $$
+declare
+  v_supplier_a  uuid;
+  v_sub_agent   uuid;
+  v_manager     uuid;
+  v_root_a      uuid;
+  v_root_b      uuid;
+  v_depth_sub   integer;
+  v_depth_mgr   integer;
+begin
+  select id into v_supplier_a from _rls_test_ids where name = 'supplier_a';
+
+  v_sub_agent := gen_random_uuid();
+  v_manager   := gen_random_uuid();
+
+  -- A manager one level below Supplier A, and somebody under them.
+  -- Each profile needs a REAL account first: profiles.id points at
+  -- auth.users.id, and the checks in this file are about chain rules,
+  -- not about a foreign key quietly doing the refusing.
+  insert into auth.users (id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at, raw_app_meta_data, raw_user_meta_data)
+  values (v_manager, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'manager@tracker.local', crypt('x', gen_salt('bf')), now(), now(), now(), '{"provider":"email","providers":["email"]}', '{"full_name":"Manager A"}');
+
+  insert into auth.users (id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at, raw_app_meta_data, raw_user_meta_data)
+  values (v_sub_agent, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'subagent@tracker.local', crypt('x', gen_salt('bf')), now(), now(), now(), '{"provider":"email","providers":["email"]}', '{"full_name":"Sub Agent A"}');
+
+  insert into public.profiles (id, role, supplier_id, parent_id, full_name, username)
+  values (v_manager, 'client', v_supplier_a, v_supplier_a, 'Manager A', 'manager_a');
+
+  insert into public.profiles (id, role, supplier_id, parent_id, full_name, username)
+  values (v_sub_agent, 'agent', v_supplier_a, v_manager, 'Sub Agent A', 'subagenta');
+
+  insert into _rls_test_ids values ('manager_a', v_manager), ('sub_agent_a', v_sub_agent);
+
+  select public.supply_chain_root(v_sub_agent) into v_root_a;
+  select public.supply_chain_root(v_supplier_a)  into v_root_b;
+  select public.supply_chain_depth(v_sub_agent) into v_depth_sub;
+  select public.supply_chain_depth(v_manager)   into v_depth_mgr;
+
+  if v_root_a = v_root_b
+     and v_depth_mgr = 2
+     and v_depth_sub = 3 then
+    raise warning 'PASS - Chain root: a level-3 agent resolves to the same Supplier as its manager (Supplier %, levels % and %).',
+      v_root_a, v_depth_mgr, v_depth_sub;
+  else
+    raise warning 'FAIL - Chain root: sub-agent resolved to Supplier % but its manager resolved to %. Expected the same Supplier, at levels % and %.',
+      v_root_a, v_root_b, v_depth_mgr, v_depth_sub;
+  end if;
+end
+$$;
+
+-- ===================================================================
+-- TEST 23: A manager must be in the same Supplier's tree
+-- ===================================================================
+-- THE INVARIANT. If this fails, one Supplier can graft their agent onto
+-- another Supplier's chain, and that agent's team would inherit a
+-- stranger's catalogue and prices. That is the whole multi-level model
+-- resting on one comparison.
+-- ===================================================================
+do $$
+declare
+  v_supplier_a uuid;
+  v_client_b   uuid;
+  v_blocked    boolean := false;
+  v_rogue      uuid;
+begin
+  select id into v_supplier_a from _rls_test_ids where name = 'supplier_a';
+  select id into v_client_b   from _rls_test_ids where name = 'client_b';
+
+  v_rogue := gen_random_uuid();
+
+  -- The account exists: without it, the insert below would be stopped by
+  -- the foreign key before the cross-supplier rule was ever consulted,
+  -- and the test would "pass" for the wrong reason. It is registered in
+  -- _rls_test_ids so the cleanup at the end removes it even though the
+  -- profiles row is never created.
+  insert into auth.users (id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at, raw_app_meta_data, raw_user_meta_data)
+  values (v_rogue, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'rogue@tracker.local', crypt('x', gen_salt('bf')), now(), now(), now(), '{"provider":"email","providers":["email"]}', '{"full_name":"Rogue Agent"}');
+  insert into _rls_test_ids values ('rogue', v_rogue);
+
+  begin
+    -- Supplier A's agent, trying to report to Supplier B's client.
+    insert into public.profiles (id, role, supplier_id, parent_id, full_name, username)
+    values (v_rogue, 'agent', v_supplier_a, v_client_b, 'Rogue Agent', 'roguea');
+  exception when others then
+    v_blocked := true;
+  end;
+
+  -- The rejected row must not exist afterwards. A trigger that raised
+  -- but somehow let the row through would be worse than no trigger.
+  if exists (select 1 from public.profiles where id = v_rogue) then
+    raise warning 'FAIL - Cross-supplier chain: the trigger reported an error but the row was saved anyway.';
+  elsif v_blocked then
+    raise warning 'PASS - Cross-supplier chain: a manager from another Supplier is refused, and nothing was saved.';
+  else
+    raise warning 'FAIL - Cross-supplier chain: an agent was allowed to report to a manager in another Supplier''s chain.';
+  end if;
+end
+$$;
+
+-- ===================================================================
+-- TEST 24: Four levels is the limit, and a loop is refused too
+-- ===================================================================
+-- Two protections in one check, because they share one code path: the
+-- depth walk is bounded, so a circular chain reports the maximum depth
+-- and is turned away by the same comparison that enforces the limit.
+--
+-- A chain deeper than four means the levels have crept past what the
+-- design was proven for. A loop means an account could end up reporting
+-- to itself and the team tree would never finish building.
+-- ===================================================================
+do $$
+declare
+  v_supplier_a uuid;
+  v_level3     uuid;
+  v_level4     uuid;
+  v_four_ok        boolean := false;
+  v_five_blocked   boolean := false;
+  v_loop_blocked   boolean := false;
+begin
+  select id into v_supplier_a from _rls_test_ids where name = 'supplier_a';
+  select id into v_level3 from _rls_test_ids where name = 'sub_agent_a';
+
+  -- Level 4 must be ALLOWED. This is the level the client asked for, so
+  -- if the depth rule is off by one this is where it shows. The account
+  -- row comes first, for the same reason as tests 22 and 23: the refusal
+  -- tests below must be refused by the DEPTH rule, not by a missing
+  -- account.
+  v_level4 := gen_random_uuid();
+  insert into auth.users (id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at, raw_app_meta_data, raw_user_meta_data)
+  values (v_level4, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'deep@tracker.local', crypt('x', gen_salt('bf')), now(), now(), now(), '{"provider":"email","providers":["email"]}', '{"full_name":"Deep Agent"}');
+
+  begin
+    insert into public.profiles (id, role, supplier_id, parent_id, full_name, username)
+    values (v_level4, 'agent', v_supplier_a, v_level3, 'Deep Agent', 'deepa');
+    -- Register it so the cleanup at the end of this file removes it.
+    insert into _rls_test_ids values ('deepa', v_level4);
+    v_four_ok := true;
+  exception when others then
+    null;
+  end;
+
+  -- Level 5 must be REFUSED, because its manager is already level 4. Its
+  -- account is still created and registered, so the refusal can only come
+  -- from the depth rule and the account does not outlive the test: the
+  -- cleanup deletes it even though no profiles row was ever saved.
+  if v_four_ok then
+    declare
+      v_level5 uuid;
+    begin
+      v_level5 := gen_random_uuid();
+      insert into auth.users (id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at, raw_app_meta_data, raw_user_meta_data)
+      values (v_level5, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'levelfive@tracker.local', crypt('x', gen_salt('bf')), now(), now(), now(), '{"provider":"email","providers":["email"]}', '{"full_name":"Level Five"}');
+      insert into _rls_test_ids values ('levelfive', v_level5);
+
+      begin
+        insert into public.profiles (id, role, supplier_id, parent_id, full_name, username)
+        values (v_level5, 'agent', v_supplier_a, v_level4, 'Level Five', 'levelfive');
+      exception when others then
+        v_five_blocked := true;
+      end;
+    end;
+  end if;
+
+  -- A loop must be REFUSED. Making a level-3 agent report to its own
+  -- level-4 subordinate walks 3 -> 4 -> 3 -> 4 until the bounded walk
+  -- runs out, and comes back looking deeper than any legal chain.
+  if v_four_ok then
+    begin
+      update public.profiles set parent_id = v_level4 where id = v_level3;
+    exception when others then
+      v_loop_blocked := true;
+    end;
+  end if;
+
+  if not v_four_ok then
+    raise warning 'FAIL - Depth limit: level 4 was refused, so the four levels the client asked for do not work.';
+  elsif not v_five_blocked then
+    raise warning 'FAIL - Depth limit: a fifth level was allowed.';
+  elsif not v_loop_blocked then
+    raise warning 'FAIL - Loop limit: a circular chain was allowed.';
+  else
+    raise warning 'PASS - Depth and loop limits: level 4 works, a fifth level is refused, and a circular chain is refused.';
+  end if;
+end
+$$;
+
+-- ===================================================================
+-- TEST 25: A Client cannot move themselves to another Supplier
+-- ===================================================================
+-- Migration 002 limits what a person may write on their own profile to
+-- full_name, phone and address. This proves supplier_id and parent_id
+-- are genuinely outside that list: a crafted request naming them is
+-- refused by the database on the column, before any policy is consulted.
+-- ===================================================================
+do $$
+declare
+  v_blocked     boolean := false;
+  v_client      uuid;
+  v_supplier_b  uuid;
+begin
+  select id into v_client     from _rls_test_ids where name = 'client_a';
+  select id into v_supplier_b from _rls_test_ids where name = 'supplier_b';
+
+  set local role authenticated;
+  perform set_config('request.jwt.claim.sub', v_client::text, true);
+  begin
+    -- Move themselves under the rival Supplier. Both values are resolved
+    -- before the role switch, so a refusal here can only come from the
+    -- column rules and not from the temp table being unreadable.
+    update public.profiles
+       set supplier_id = v_supplier_b,
+           parent_id  = null
+     where id = v_client;
+  exception when others then
+    v_blocked := true;
+  end;
+  reset role;
+
+  if v_blocked then
+    raise warning 'PASS - Self-reassignment is refused: a Client cannot write supplier_id on their own profile.';
+  else
+    -- Not an exception but still a refusal is fine. The real question is
+    -- whether the value actually changed.
+    if exists (
+      select 1 from public.profiles
+       where id = v_client
+         and supplier_id = (select id from _rls_test_ids where name = 'supplier_b')
+    ) then
+      raise warning 'FAIL - Self-reassignment: a Client moved themselves to another Supplier.';
+    else
+      raise warning 'PASS - Self-reassignment is refused: a Client cannot write supplier_id on their own profile.';
+    end if;
+  end if;
+end
+$$;
+
+-- ===================================================================
+-- TEST 26: The currency lookup stays narrow
+-- ===================================================================
+-- A Client and an Agent may not read supplier_settings -- that table
+-- holds the backorder switch, which is business information. This is how
+-- their screens get the currency without getting the switch.
+--
+-- The tripwire fails if my_currency() ever grows an argument (which would
+-- mean trusting the browser about whose currency to return) or stops
+-- returning one text value (which would mean a settings row escaping
+-- with it).
+-- ===================================================================
+do $$
+declare
+  v_client          uuid;
+  v_supplier        uuid;
+  v_client_currency text;
+  v_supplier_currency text;
+begin
+  perform public.assert_currency_function_is_narrow();
+
+  -- A Supplier gets the currency from their own settings row.
+  select id into v_supplier from _rls_test_ids where name = 'supplier_a';
+  update public.supplier_settings set currency = 'MYR' where supplier_id = v_supplier;
+
+  set local role authenticated;
+  perform set_config('request.jwt.claim.sub', v_supplier::text, true);
+  select public.my_currency() into v_supplier_currency;
+  reset role;
+
+  -- Their Client, who has no right to read that settings row at all,
+  -- still reads the same value through the function.
+  select id into v_client from _rls_test_ids where name = 'client_a';
+  set local role authenticated;
+  perform set_config('request.jwt.claim.sub', v_client::text, true);
+  select public.my_currency() into v_client_currency;
+  reset role;
+
+  -- Put it back, so re-running this file is unaffected.
+  update public.supplier_settings set currency = 'IDR' where supplier_id = v_supplier;
+
+  -- Supplier B is untouched. That is the point: the function answers for
+  -- the CALLER, never for a whole table.
+  if v_supplier_currency = 'MYR' and v_client_currency = 'MYR' then
+    raise warning 'PASS - Currency lookup: a Client reads their own Supplier''s currency without being able to read the settings row, and the function takes no argument.';
+  else
+    raise warning 'FAIL - Currency lookup: Supplier read "%" and their Client read "%". Expected both MYR.',
+      v_supplier_currency, v_client_currency;
+  end if;
+end
+$$;
+
+-- The whole file is ONE transaction, from the `begin` near the top to the
+-- single `commit` after the cleanup below. Splitting it here used to leave
+-- a second, stray `commit` with no matching `begin`, which makes psql
+-- print "there is no transaction in progress" and looks exactly like a
+-- failure to somebody running these tests for the first time.
+-- If any check fails, everything this file did is rolled back, which is
+-- what you want: a half-run of the security suite leaves test accounts
+-- behind in the business's database.
+
+-- ===================================================================
+-- CLEAN UP -- must be the LAST thing in this file
+-- ===================================================================
+-- This block used to sit in the middle of the file, where it dropped the
+-- _rls_test_ids table. Every test after that point then read a table that
+-- no longer existed, and the whole file stopped with a hard error, so
+-- eleven checks would never have run at all.
+--
+-- Five details this version has to get right:
+--
+--   1. Profiles form a tree and the links are BOTH ON DELETE RESTRICT
+--      (001 supplier_id, 014 parent_id): a client/agent points at their
+--      supplier, an agent may point at a manager. Children are deleted
+--      before the profiles they point at, deepest-first, one pass per
+--      level. Nulling the links instead would not work either: 014's
+--      update trigger refuses a client or agent with no supplier.
+--   2. stock_movements.created_by and product_id are ON DELETE RESTRICT
+--      (009), and the table is append-only: a trigger refuses every
+--      delete. The guard is stood down just long enough to remove the
+--      suite's own movement rows and is put straight back afterwards.
+--   3. Deleting a Supplier's profile cascades to their products, and the
+--      products lifecycle trigger writes an audit row naming the actor
+--      from the JWT claim. During cleanup that claim is stale or gone,
+--      so the insert would fail its FK -- and the rows being removed are
+--      test fixtures anyway. That trigger is stood down for the deletion
+--      phase and re-enabled after it, like the movements guard.
+--   4. Only rows this file created are touched, identified by their ids.
+--      Nothing belonging to the business is read, let alone removed.
+--   5. The rls_count() helper is public test scaffolding; it is dropped
+--      so the suite leaves the schema exactly as it found it.
+--   6. The whole file is one transaction: if any check fails, all of the
+--      above (the stand-downs included) rolls back and the database is
+--      left exactly as it was.
+do $$
+declare
+  r record;
+begin
+  -- 1. Movement rows written by the stock checks reference test users
+  --    (created_by) and test products (product_id) with RESTRICT fks,
+  --    so they must go before the users or products they point at.
+  --    The append-only trigger refuses every delete on purpose, so the
+  --    guard is stood down for exactly this cleanup and re-enabled
+  --    immediately. Only test rows are removed: the where clause is
+  --    scoped to test ids, never a blanket clear.
+  alter table public.stock_movements
+    disable trigger stock_movements_no_update;
+
+  delete from public.stock_movements
+   where created_by in (select id from _rls_test_ids)
+      or product_id in (select id from public.products
+                         where supplier_id in (select id from _rls_test_ids));
+
+  alter table public.stock_movements
+    enable trigger stock_movements_no_update;
+
+  -- 2. Profiles, deepest-first. supplier_id and parent_id are both
+  --    ON DELETE RESTRICT, so a profile may only be deleted once nothing
+  --    else points at it: one pass removes the rows at the current
+  --    bottom of each chain, and the loop repeats until a pass deletes
+  --    nothing. (Max chain depth is 4, so this terminates quickly.)
+  --
+  --    Deleting a Supplier's profile cascades to their products, whose
+  --    lifecycle trigger would then write an audit row naming the actor
+  --    from the JWT claim. During cleanup that claim is stale or gone,
+  --    so the insert fails its FK. The trigger is stood down for this
+  --    phase and re-enabled below, before anything else runs.
+  alter table public.products
+    disable trigger products_audit_lifecycle;
+
+  loop
+    delete from public.profiles p
+     where p.id in (select id from _rls_test_ids)
+       and not exists (
+         select 1 from public.profiles c
+          where c.id in (select id from _rls_test_ids)
+            and (c.supplier_id = p.id or c.parent_id = p.id)
+       );
+    exit when not found;
+  end loop;
+
+  alter table public.products
+    enable trigger products_audit_lifecycle;
+
+  -- 3. Now the users go. Profiles cascade away, and with them products,
+  --    supplier_settings and client features. Order inside the loop no
+  --    longer matters: the deepest-first passes above removed every
+  --    profile that pointed at another test profile.
+  for r in select id from _rls_test_ids loop
+    delete from auth.users where id = r.id;
+  end loop;
+
+  -- 4. Drop the test scaffolding.
+  drop table if exists _rls_test_ids;
+  drop function if exists public.rls_count(regclass, name);
+  raise notice 'Test data cleaned up. All test rows removed.';
 end
 $$;
 
@@ -1011,12 +1481,22 @@ commit;
 -- ===================================================================
 -- SUMMARY
 -- ===================================================================
--- You should see TWENTY-THREE PASS messages and no FAIL warnings.
+-- You should see TWENTY-EIGHT PASS messages and no FAIL warnings.
 --
--- Note the number is 23, not 21, because two of the checks below each
--- print two separate PASS messages (the stock ones). They are counted as
--- separate messages because they prove separate things, and merging them
--- would hide one failure behind the other.
+-- The number is bigger than the number of checks on purpose:
+--
+--   26 checks, 28 messages.
+--   Check 14 prints THREE, because it proves three separate things --
+--   the direct write, an Agent moving stock, and the log being
+--   append-only. Merging them would hide one failure behind the other.
+--   Check 25 prints one of two possible messages depending on which way
+--   it was refused, so its two lines never both appear.
+--
+-- If the run STOPS partway through with a red error, rather than printing
+-- FAIL, that is a different fault from a failed check: the database is
+-- missing a function or a column that a migration should have created.
+-- Send the whole error text to your developer, because every check after
+-- it did not run at all.
 --
 -- WHO CAN SEE WHOM:
 --   1. Client isolation      - a Client sees only self + own Supplier
@@ -1055,6 +1535,19 @@ commit;
 --   21. Nobody can switch off their own account, so the last Super Admin
 --       cannot lock everybody out
 --
+-- FOUR LEVELS, WHICH IS WHERE THE TEAM TREE COULD GO WRONG:
+--   22. A level-3 agent resolves to the SAME Supplier as its manager, so
+--       every price and catalogue rule still measures the same business
+--   23. A manager must be in the same Supplier's tree, and a refused row
+--       is not saved anyway
+--   24. Level 4 works, level 5 is refused, and a circular chain is
+--       refused
+--   25. A Client cannot write supplier_id on their own profile
+--
+-- MONEY DISPLAY:
+--   26. A Client reads their own Supplier's currency without being able
+--       to read the settings row, and the function takes no argument
+--
 -- IF A TEST FAILED:
 --   1. Do not launch the app.
 --   2. Test 8, 9, 12, 13 -> look at 008_product_views.sql and
@@ -1063,8 +1556,11 @@ commit;
 --   4. Test 16, 17, 18    -> look at 012_account_views.sql
 --   5. Test 19, 20, 21    -> look at 013_public_wrappers.sql and the
 --      function in 004_private_functions.sql
---   6. Re-run this file to confirm the fix worked.
+--   6. Test 22, 23, 24, 25-> look at 014_supply_chain_levels.sql
+--   7. Test 26            -> look at 015_currency_lookup.sql
+--   8. Re-run this file to confirm the fix worked.
 --
--- Tests 9, 11, 13, 19 and 21 are the ones to read twice. The first three
--- protect the Supplier's margin; the last two protect the last person
--- who can still fix the system. They fail loudly rather than quietly.
+-- Tests 9, 11, 13, 19, 21 and 23 are the ones to read twice. The first
+-- three protect the Supplier's margin; 19 and 21 protect the last person
+-- who can still fix the system; 23 is the one comparison the whole
+-- multi-level model rests on. They fail loudly rather than quietly.

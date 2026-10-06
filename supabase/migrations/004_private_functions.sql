@@ -135,7 +135,14 @@ begin
       raise exception 'That account does not exist';
     end if;
 
-    if v_target_supplier is distinct from v_actor_supplier then
+    -- Compare against the actor's OWN id, not against their
+    -- supplier_id. A Supplier is the root of their own chain: their
+    -- supplier_id is null (they belong to nobody), so comparing the
+    -- target's supplier against that null would refuse every request a
+    -- Supplier makes about their own team. The rule is "the target must
+    -- belong to me", and "me" is p_actor_id. (A Super Admin never
+    -- reaches this branch; they may manage anybody.)
+    if v_target_supplier is distinct from p_actor_id then
       raise exception 'You may only manage your own Clients and Agents';
     end if;
 
@@ -213,7 +220,11 @@ begin
       raise exception 'That account does not exist';
     end if;
 
-    if v_target_supplier is distinct from v_actor_supplier then
+    -- Same rule and same rationale as private.set_user_active: a
+    -- Supplier's own supplier_id is null, so the target must be
+    -- compared against the actor's own id -- "does this account belong
+    -- to me?".
+    if v_target_supplier is distinct from p_actor_id then
       raise exception 'You may only manage your own Clients and Agents';
     end if;
 

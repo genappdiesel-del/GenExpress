@@ -162,6 +162,13 @@ $$;
 -- is deliberate: the check must be somewhere the private function
 -- controls, so that this wrapper cannot be edited later into something
 -- that skips it.
+--
+-- SECURITY DEFINER is required, for the same reason as in migration 013:
+-- an INVOKER wrapper runs as `authenticated`, which has no USAGE on
+-- schema `private`, so every call would fail with `permission denied for
+-- schema private` before the private function ran. The wrapper crosses
+-- the schema boundary as `postgres`; the actor is still auth.uid() and
+-- every rule still lives inside private.append_stock_movement().
 create or replace function public.adjust_stock(
   p_product_id uuid,
   p_qty_delta  numeric,
@@ -170,8 +177,8 @@ create or replace function public.adjust_stock(
 )
 returns numeric
 language plpgsql
-security invoker
-set search_path = public, extensions
+security definer
+set search_path = public, private, extensions
 as $$
 begin
   if (select public.current_is_active()) is not true then
