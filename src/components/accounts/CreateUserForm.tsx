@@ -24,17 +24,26 @@
 // function directly, and it will still refuse them.
 // ===================================================================
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { NotSavedBanner } from '../ui'
 import {
   checkUsername,
   createAccount,
+  listTeam,
   passwordStrength,
   type FieldErrors,
   type NewAccount,
+  type TeamMember,
 } from '../../lib/accounts'
 import type { Profile } from '../../types/database'
+import { makeT } from '../../i18n'
+
+/** The deepest level anybody may sit at. Matches the depth rule in
+ *  supabase/migrations/014_supply_chain_levels.sql. A person at level 4
+ *  is not offered as a manager, because the database would refuse them
+ *  and a form that offers an impossible choice is a form that lies. */
+const MAX_LEVELS = 4
 
 export interface CreateUserFormProps {
   /** The person doing the creating. Decides which roles are offered. */
@@ -60,7 +69,7 @@ export function CreateUserForm({
   onCancel,
   onCreated,
 }: CreateUserFormProps) {
-  const t = (id: string, en: string) => (language === 'id' ? id : en)
+  const t = makeT(language)
 
   const isSuperAdmin = caller.role === 'super_admin'
 
@@ -75,11 +84,74 @@ export function CreateUserForm({
   const [role, setRole] = useState<NewAccount['role']>('client')
   const [supplierId, setSupplierId] = useState(suppliers[0]?.id ?? '')
 
+  // ------------------------------------------------------------------
+  // Who recruited this person
+  // ------------------------------------------------------------------
+  // Left empty, the new account sits at level 2 straight under the
+  // Supplier. Choosing somebody makes it level 3 or 4.
+  //
+  // The list is loaded here rather than passed in, because a Super Admin
+  // has to load the team of whichever Supplier they just picked in the
+  // box above -- there is no single team to pass in advance.
+  const [parentId, setParentId] = useState('')
+  const [team, setTeam] = useState<TeamMember[] | null>(null)
+  const [teamError, setTeamError] = useState<string | null>(null)
+
+  // Which Supplier's team applies: the one the Super Admin picked, or the
+  // caller's own. A Supplier never sends an id, the server uses theirs.
+  const effectiveSupplierId =
+    role === 'supplier' ? '' : isSuperAdmin ? supplierId : caller.id
+
+  useEffect(() => {
+    // A Supplier account has no manager and no team, so nothing to load.
+    if (effectiveSupplierId === '') {
+      setTeam(null)
+      setTeamError(null)
+      return
+    }
+
+    let cancelled = false
+    setTeam(null)
+    setTeamError(null)
+
+    listTeam(effectiveSupplierId)
+      .then((result) => {
+        if (cancelled) return
+        if (!result.ok) {
+          setTeamError(result.error)
+          return
+        }
+        setTeam(result.data)
+      })
+      .catch(() => {
+        if (!cancelled) setTeamError(t('Gagal memuat daftar tim.', 'Could not load the team list.'))
+      })
+
+    return () => {
+      cancelled = true
+    }
+    // t is rebuilt every render, so it must not be a dependency. The
+    // message it produces does not depend on anything else here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveSupplierId, language])
+
+  // Anyone already chosen as somebody's manager must not suddenly become a
+  // manager of somebody else too, so the box resets when the Supplier or
+  // the role changes. Silently keeping a stale id would create the account
+  // at the wrong level with no warning.
+  useEffect(() => {
+    setParentId('')
+  }, [effectiveSupplierId, role])
+
   const [errors, setErrors] = useState<FieldErrors>({})
   const [banner, setBanner] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
   const strength = passwordStrength(password)
+
+  // Only people who can still have somebody under them. A Supplier
+  // (level 1) counts, because that is exactly the level-2 default.
+  const possibleManagers = (team ?? []).filter((m) => m.level < MAX_LEVELS)
 
   async function submit(event: React.FormEvent) {
     event.preventDefault()
@@ -129,6 +201,10 @@ export function CreateUserForm({
       // function uses their own id from the session instead, which is
       // the only way that cannot be tampered with.
       supplierId: isSuperAdmin && role !== 'supplier' ? supplierId : null,
+      // Sent only when a manager was actually chosen. Leaving it out is
+      // not the same as sending null: the server checks a named manager
+      // carefully, and there is nothing to check when there is no name.
+      parentId: parentId || null,
     })
 
     setSaving(false)
@@ -282,6 +358,68 @@ export function CreateUserForm({
           )}
           {errors.supplierId && (
             <p className="mt-1 text-sm text-danger-700">{errors.supplierId}</p>
+          )}
+        </div>
+      )}
+
+      {/* --- Manager, which is how level 3 and 4 exist ----------------- */}
+      {role !== 'supplier' && (
+        <div>
+          <label className="label" htmlFor="new-manager">
+            {t('Melapor kepada (opsional)', 'Reports to (optional)')}
+          </label>
+
+          {teamError ? (
+            // This box is optional, so a failure to load the team must not
+            // block creating the account. It says what happened and what
+            // still works.
+            <p className="text-sm text-warn-700">
+              {t(
+                'Daftar tim tidak bisa dimuat, jadi atasan tidak bisa dipilih. Akun tetap bisa dibuat sebagai level 2.',
+                'The team list could not be loaded, so a manager cannot be chosen. The account can still be created at level 2.',
+              )}
+            </p>
+          ) : team === null ? (
+            // Deliberately a small inline note, not the full-page Loading
+            // block. This box is optional, so it should not blank out the
+            // rest of the form while it waits.
+            <p className="text-sm text-slate-500">
+              {t('Memuat tim...', 'Loading the team...')}
+            </p>
+          ) : possibleManagers.length === 0 ? (
+            <p className="text-sm text-slate-500">
+              {t(
+                'Belum ada orang lain di tim ini. Akun ini akan menjadi level 2.',
+                'Nobody else is in this team yet. This account will be level 2.',
+              )}
+            </p>
+          ) : (
+            <>
+              <select
+                id="new-manager"
+                className="field"
+                value={parentId}
+                onChange={(e) => setParentId(e.target.value)}
+              >
+                <option value="">
+                  {t(
+                    'Tidak ada (langsung ke pemasok)',
+                    'Nobody (straight to the Supplier)',
+                  )}
+                </option>
+                {possibleManagers.map((member) => (
+                  <option key={member.id} value={member.id}>
+                    {member.full_name} — {t(`Level ${member.level}`, `Level ${member.level}`)}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-slate-500">
+                {t(
+                  `Kosongkan bila orang ini bekerja langsung dengan pemasok. Pilih atasan bila ini agent di bawah agent. Maksimal ${MAX_LEVELS} tingkat.`,
+                  `Leave empty if this person deals with the Supplier directly. Pick a manager if this agent works under another agent. Up to ${MAX_LEVELS} levels.`,
+                )}
+              </p>
+            </>
           )}
         </div>
       )}

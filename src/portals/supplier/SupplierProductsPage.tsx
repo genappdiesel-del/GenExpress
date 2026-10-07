@@ -55,6 +55,7 @@ import {
   marginOf,
 } from '../../lib/products'
 import type { Currency, ProductRow } from '../../types/database'
+import { makeT } from '../../i18n'
 
 /** Rows per page. A screenful on a phone. */
 const PAGE_SIZE = 20
@@ -65,7 +66,7 @@ export interface SupplierProductsProps {
 }
 
 export function SupplierProducts({ supplierId, language }: SupplierProductsProps) {
-  const t = (id: string, en: string) => (language === 'id' ? id : en)
+  const t = makeT(language)
 
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')

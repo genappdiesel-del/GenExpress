@@ -22,6 +22,7 @@ import { NotSavedBanner, StatusBadge } from '../ui'
 import { adjustStock } from '../../lib/products'
 import { formatQty } from '../../lib/money'
 import type { ProductRow, StockMovementReason } from '../../types/database'
+import { makeT } from '../../i18n'
 
 export interface StockAdjustProps {
   product: ProductRow
@@ -77,7 +78,7 @@ const REASONS: Array<{
 ]
 
 export function StockAdjust({ product, language, onClose, onSaved }: StockAdjustProps) {
-  const t = (id: string, en: string) => (language === 'id' ? id : en)
+  const t = makeT(language)
 
   const [reason, setReason] = useState<StockMovementReason>('purchase')
   const [amount, setAmount] = useState('')

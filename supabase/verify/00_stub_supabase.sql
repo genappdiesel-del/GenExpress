@@ -30,6 +30,7 @@
 -- Or just run verify/run_all.ps1
 -- ===================================================================
 
+create schema if not exists extensions;
 create extension if not exists pgcrypto with schema extensions;
 
 -- Roles that exist in every real Supabase project.

@@ -24,6 +24,7 @@ import { StatusBadge, Loading } from '../ui'
 import { cleanNumber, parseProductCsv, productCsvTemplate, type ParsedRow } from '../../lib/csv'
 import { importProducts } from '../../lib/products'
 import type { ProductInput } from '../../types/database'
+import { makeT } from '../../i18n'
 
 export interface CsvImportProps {
   language: 'id' | 'en'
@@ -32,7 +33,7 @@ export interface CsvImportProps {
 }
 
 export function CsvImport({ language, onCancel, onImported }: CsvImportProps) {
-  const t = (id: string, en: string) => (language === 'id' ? id : en)
+  const t = makeT(language)
   const fileRef = useRef<HTMLInputElement | null>(null)
 
   const [fileName, setFileName] = useState<string | null>(null)

@@ -58,6 +58,7 @@ const id = {
   confirmPassword: 'Ulangi kata sandi baru',
   passwordMismatch: 'Kata sandi tidak sama',
   passwordTooShort: 'Kata sandi harus minimal 8 karakter',
+  passwordSameAsOld: 'Kata sandi baru harus berbeda dari yang lama.',
   passwordChanged: 'Kata sandi berhasil diganti. Silakan masuk.',
   // --- Roles ---
   role: 'Peran',
@@ -132,6 +133,7 @@ const en: Record<TranslationKey, string> = {
   confirmPassword: 'Repeat new password',
   passwordMismatch: 'Passwords do not match',
   passwordTooShort: 'Password must be at least 8 characters',
+  passwordSameAsOld: 'The new password must be different from the old one.',
   passwordChanged: 'Password changed. Please log in.',
   role: 'Role',
   roleSuperAdmin: 'Super Admin',
@@ -161,6 +163,51 @@ export const translations: Record<LanguageCode, Record<TranslationKey, string>> 
   id,
   en,
 }
+
+// --- The inline helper, for wording that sits next to what it translates
+// -----------------------------------------------------------------------
+// WHY THIS EXISTS ALONGSIDE `t` ABOVE
+//
+// The hook's `t` takes a KEY and looks it up in two dictionaries. That is
+// right for short, reused words: Save, Cancel, Loading.
+//
+// Most of this app's wording is not short and not reused. It is a whole
+// sentence sitting inside one screen, and there are well over a hundred
+// of them. Putting those in a dictionary would mean, for every change,
+// editing a call site here AND remembering its line number 1,500 lines
+// away in another file. Miss it and the app shows one language in the
+// middle of the other -- and the build cannot catch that, because both
+// languages have some entry, just not the matching pair.
+//
+// So screen wording uses `makeT`, which puts the two languages on the
+// SAME LINE as the thing being labelled. You cannot provide one language
+// and forget the other: they are a pair in the call, and TypeScript
+// rejects a call with only one. That is a stronger guarantee for
+// sentence-length text than a dictionary is.
+//
+// WHAT IS LOST, and this is deliberate
+// You cannot sweep every string in one place to hand to a translator.
+// Nothing in this app is translated by anyone outside the team today. If
+// that ever changes, the right move is to write an extraction script over
+// these calls, not to move them all by hand first.
+//
+// WHEN TO USE WHICH:
+//   makeT(language)   a sentence that appears on one screen only.
+//   t('key')          a word that appears on many screens, and the
+//                     short building blocks in ui.tsx.
+//
+// Both default to Bahasa Indonesia, so a missing branch reads correctly
+// for the people this app is for rather than showing English by accident.
+export const makeT =
+  (language: LanguageCode) =>
+  /**
+   * `bahasa` first, `english` second -- same order as the phone keyboard
+   * layout in Indonesia, and the same order everything else in this app
+   * uses. Putting the default first means the readable value is the one
+   * that appears when somebody squints at a call site.
+   */
+  (bahasa: string, english: string): string =>
+    language === 'id' ? bahasa : english
 
 // --- Money and dates ----------------------------------------------------
 // Money formatting used to live here as well as in src/lib/money.ts. Two

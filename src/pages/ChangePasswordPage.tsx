@@ -9,6 +9,7 @@
 
 import { useState, type FormEvent } from 'react'
 import { useLanguage } from '../hooks/useLanguage'
+import { LanguageToggle } from '../components/LanguageToggle'
 
 export function ChangePasswordPage({
   onSubmit,
@@ -21,7 +22,7 @@ export function ChangePasswordPage({
   busy: boolean
   userName: string
 }) {
-  const { t } = useLanguage()
+  const { t, language, setLanguage } = useLanguage()
 
   const [fieldError, setFieldError] = useState<string | null>(null)
 
@@ -43,11 +44,7 @@ export function ChangePasswordPage({
       return
     }
     if (newPassword === String(data.get('oldPassword') ?? '')) {
-      setFieldError(
-        t('language') === 'English'
-          ? 'The new password must be different from the old one.'
-          : 'Kata sandi baru harus berbeda dari yang lama.',
-      )
+      setFieldError(t('passwordSameAsOld'))
       return
     }
 
@@ -58,6 +55,15 @@ export function ChangePasswordPage({
   return (
     <div className="flex min-h-dvh items-center justify-center bg-slate-50 px-4 py-12">
       <div className="w-full max-w-sm">
+        {/* The switch sits above the card because this is the first thing
+            a brand-new person sees after signing in for the first time.
+            If the wording on this screen is not in the language they read
+            fastest, this is where they change it, before they are asked
+            to type a password. */}
+        <div className="mb-4 flex justify-end">
+          <LanguageToggle language={language} onChange={setLanguage} size="card" />
+        </div>
+
         <div className="card space-y-4">
           <div>
             <h1 className="text-xl font-bold text-slate-900">{t('changePasswordTitle')}</h1>

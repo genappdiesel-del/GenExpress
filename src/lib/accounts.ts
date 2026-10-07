@@ -75,6 +75,14 @@ export interface NewAccount {
    *  Supplier leaves it out and the function uses their own id from the
    *  session, which is the only value that cannot be tampered with. */
   supplierId?: string | null
+  /** Who recruited this person. Left out means level 2, straight under the
+   *  Supplier. Filling it in means level 3 or 4.
+   *
+   *  The function checks the person named here is inside the caller's own
+   *  Supplier chain before using this value, and the database checks it
+   *  again. So a wrong id cannot move an account into a rival's team --
+   *  at worst it is ignored and the account lands at level 2. */
+  parentId?: string | null
 }
 
 /** Field-level problems, so each message can sit next to its own box.
@@ -269,4 +277,82 @@ export async function setAccountActive(
 
   if (error) return fail(error)
   return { ok: true, data: undefined }
+}
+
+// ===================================================================
+// The team tree
+// ===================================================================
+// One Supplier, everyone under them, and which level each person sits
+// at. Level 1 is the Supplier themselves.
+//
+// This is read from a database function rather than by walking accounts
+// in the browser, for two reasons. First, the level is worked out by a
+// bounded walk that the database already owns, so the browser never has
+// to hold a chain in memory or be trusted to draw it. Second, and more
+// importantly, the function returns only ONE Supplier's rows, so there
+// is no version of this call that can return a stranger's team.
+//
+// A team can be four deep. Nobody at level 4 can have anybody under
+// them, and that is checked in the database when the account is created,
+// not here.
+
+export interface TeamMember {
+  id: string
+  /** Who recruited them. Empty means straight under the Supplier. */
+  parent_id: string | null
+  role: 'supplier' | 'client' | 'agent'
+  /** 1 is the Supplier, 4 is the deepest anybody may go. */
+  level: number
+  full_name: string
+  username: string
+  is_active: boolean
+}
+
+export async function listTeam(supplierId: string): Promise<Result<TeamMember[]>> {
+  const { data, error } = await supabase.rpc('supply_chain_members', {
+    p_supplier_id: supplierId,
+  })
+
+  if (error) return fail(error)
+  return { ok: true, data: (data ?? []) as TeamMember[] }
+}
+
+/**
+ * The currency this person's own Supplier trades in.
+ *
+ * Why this is a call and not a value the app remembers: Clients and
+ * Agents may not read the settings table -- it holds business
+ * information such as the backorder switch -- so before migration 015 the
+ * frontend simply assumed Rupiah for them. A wrong currency symbol is a
+ * money bug, not a formatting one: it turns 100 ringgit into 100 rupiah
+ * and nobody notices until a customer does.
+ *
+ * The database function returns one value, for the caller only. This
+ * screen caches the answer per signed-in person, for two reasons:
+ * a currency cannot change under somebody while they are working, and a
+ * shop passes one phone between people all day, so the value must be
+ * thrown away when the person on it changes rather than reused.
+ *
+ * Passing the caller's id is what invalidates the cache. The id is read
+ * from the session on the way here -- the function itself never accepts
+ * a caller id, it reads auth.uid(), which the browser cannot forge.
+ */
+let currencyCache: { ownerId: string; value: string } | null = null
+
+export async function getMyCurrency(ownerId: string): Promise<string> {
+  if (currencyCache && currencyCache.ownerId === ownerId) return currencyCache.value
+
+  let value = 'IDR'
+  try {
+    const { data } = await supabase.rpc('my_currency')
+    // 'IDR' is the fallback rather than an empty string, so a failed
+    // lookup shows a real currency symbol rather than an empty gap.
+    if (typeof data === 'string' && data.length > 0) value = data
+  } catch {
+    // Keep the fallback. Refusing to draw the app over one lookup would
+    // be worse than showing the confirmed default.
+  }
+
+  currencyCache = { ownerId, value }
+  return value
 }

@@ -22,6 +22,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useAuth } from './hooks/useAuth'
 import { useLanguage } from './hooks/useLanguage'
 import { isConfigured } from './lib/supabase'
+import { getMyCurrency } from './lib/accounts'
 import type { TranslationKey } from './i18n'
 import type { Currency, Profile, UserRole } from './types/database'
 
@@ -101,24 +102,47 @@ function portalTitleForRole(role: UserRole, t: (k: TranslationKey) => string): s
 /**
  * The currency a person's money is shown in.
  *
- * Only a Supplier can choose this: it lives in supplier_settings, which
- * Clients and Agents cannot read. So for everyone else this is the one
- * documented default, IDR.
+ * This used to be a hardcoded `return 'IDR'`, with a note admitting that
+ * every price on a Client's and an Agent's screen was labelled by
+ * assumption rather than by reading it. Migration 015 closed that: a
+ * database function returns the caller's OWN Supplier's currency, so the
+ * value the app shows is the value the Supplier chose.
  *
- * If the client later runs the business in another country, this becomes
- * a real gap and the fix belongs in the database -- a view exposing
- * nothing but the currency for the caller's own Supplier. It is called
- * out in DECISIONS.md rather than quietly guessed at, because showing a
- * price with the wrong symbol is a money bug, not a formatting one.
+ * It is loaded rather than computed, because it comes from the database.
+ * Until it arrives the app shows Rupiah, which is the confirmed default
+ * for this business, so a slow network never shows an empty symbol on a
+ * price.
  */
-function currencyFor(): Currency {
-  return 'IDR'
-}
 
 export default function App() {
   const { state, error, clearError, signIn, signOut, changePassword } = useAuth()
-  const { t, language, setLanguage, languages } = useLanguage()
+  const { t, language, setLanguage } = useLanguage()
   const [busy, setBusy] = useState(false)
+
+  // The currency comes from the database, once per signed-in person.
+  // Two things are being guarded here rather than just fetched:
+  //
+  //  - It must not be looked up before there is a session, because the
+  //    function answers for whoever is signed in and there is nobody yet.
+  //  - It must be looked up again when a DIFFERENT person signs in on the
+  //    same phone, because in a shop one device gets passed around and
+  //    two Suppliers may not share a currency.
+  //
+  // Until it arrives the app shows Rupiah, which is the confirmed default
+  // for this business, so a slow network never blanks the symbol on a
+  // price.
+  const signedInId = state.status === 'signed_in' ? state.profile.id : null
+  const [currency, setCurrency] = useState<Currency>('IDR')
+  useEffect(() => {
+    if (signedInId === null) return
+    let cancelled = false
+    getMyCurrency(signedInId).then((value) => {
+      if (!cancelled) setCurrency(value as Currency)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [signedInId])
 
   // Hash routing. We only ever deal with a handful of fixed paths, so this
   // stays simple and dependency-free. Using the hash means the app works on
@@ -220,7 +244,6 @@ export default function App() {
       userName={profile.full_name}
       language={language}
       onLanguageChange={setLanguage}
-      languages={languages}
       onLogout={() => {
         if (window.confirm(t('logoutConfirm'))) {
           void signOut()
@@ -230,7 +253,7 @@ export default function App() {
       navItems={navForRole(profile.role, language)}
       logoutLabel={t('logout')}
     >
-      <Screen path={path} profile={profile} language={language} />
+      <Screen path={path} profile={profile} language={language} currency={currency} />
     </PortalShell>
   )
 }
@@ -249,13 +272,13 @@ function Screen({
   path,
   profile,
   language,
+  currency,
 }: {
   path: string
   profile: Profile
   language: 'id' | 'en'
+  currency: Currency
 }) {
-  const currency = currencyFor()
-
   // A Supplier's own profile IS the supplier id, because the database
   // keys everything on it. Clients and Agents have one too, naming the
   // Supplier they trade with. So one value covers every screen that needs

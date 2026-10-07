@@ -39,6 +39,7 @@ import { EmptyState, ErrorState, Loading, PageHeader, StatusBadge } from '../../
 import { formatMoney, formatQty } from '../../lib/money'
 import { listAgentProducts, readinessText, readinessTone } from '../../lib/products'
 import type { AgentProductRow, Currency } from '../../types/database'
+import { makeT } from '../../i18n'
 
 /** How many rows the "browse" list shows. An Agent is looking, not
  *  auditing, so a short list is plenty and keeps the phone quick. */
@@ -50,7 +51,7 @@ export interface AgentProductsProps {
 }
 
 export function AgentProducts({ currency, language }: AgentProductsProps) {
-  const t = (id: string, en: string) => (language === 'id' ? id : en)
+  const t = makeT(language)
 
   // What the Agent is searching for: either a scanned barcode or
   // something typed. Both end up here, so there is one result area rather

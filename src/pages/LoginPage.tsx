@@ -12,6 +12,7 @@
 
 import { useState, type FormEvent } from 'react'
 import { useLanguage } from '../hooks/useLanguage'
+import { LanguageToggle } from '../components/LanguageToggle'
 
 export function LoginPage({
   onSubmit,
@@ -22,7 +23,7 @@ export function LoginPage({
   error: string | null
   busy: boolean
 }) {
-  const { t, language, setLanguage, languages } = useLanguage()
+  const { t, language, setLanguage } = useLanguage()
 
   const [username, setUsername] = useState('')
   const [fieldErrors, setFieldErrors] = useState<{ username?: string; password?: string }>({})
@@ -60,21 +61,7 @@ export function LoginPage({
   return (
     <div className="flex min-h-dvh flex-col bg-slate-50">
       <header className="flex justify-end p-4">
-        <label className="sr-only" htmlFor="lang">
-          {t('language')}
-        </label>
-        <select
-          id="lang"
-          value={language}
-          onChange={(e) => setLanguage(e.target.value)}
-          className="min-h-9 rounded-lg border border-slate-300 bg-white px-2 text-sm"
-        >
-          {languages.map((l) => (
-            <option key={l.code} value={l.code}>
-              {l.label}
-            </option>
-          ))}
-        </select>
+        <LanguageToggle language={language} onChange={setLanguage} size="card" />
       </header>
 
       <main className="flex flex-1 items-center justify-center px-4 pb-16">

@@ -47,6 +47,7 @@ import {
 } from '../../lib/products'
 import { formatMoney, formatQty } from '../../lib/money'
 import type { ClientProductRow, Currency } from '../../types/database'
+import { makeT } from '../../i18n'
 
 /** Rows per page. Matches the Supplier's setting default. */
 const PAGE_SIZE = 20
@@ -66,7 +67,7 @@ export interface ClientCatalogProps {
 }
 
 export function ClientCatalog({ currency, language }: ClientCatalogProps) {
-  const t = (id: string, en: string) => (language === 'id' ? id : en)
+  const t = makeT(language)
 
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')

@@ -29,6 +29,7 @@ import { buildPhotoPath, prepareImage } from '../../lib/image'
 import { supabase } from '../../lib/supabase'
 import { hasPriceWarning, marginOf, saveProduct } from '../../lib/products'
 import type { ProductRow } from '../../types/database'
+import { makeT } from '../../i18n'
 
 export interface ProductFormProps {
   /** The product being edited, or null when adding a new one. */
@@ -110,7 +111,7 @@ export function ProductForm({
   onSaved,
   onCancel,
 }: ProductFormProps) {
-  const t = (id: string, en: string) => (language === 'id' ? id : en)
+  const t = makeT(language)
 
   const [form, setForm] = useState<FormState>(() => initialState(product))
   const [errors, setErrors] = useState<Record<string, string>>({})

@@ -20,6 +20,11 @@
 // quotes, and newlines inside quotes.
 // ===================================================================
 
+// The two-language helper. Kept in i18n so every screen in the app picks
+// wording the same way -- see the note beside makeT for why sentence
+// wording lives next to its screen instead of in the dictionary.
+import { makeT } from '../i18n'
+
 /** One parsed product row, with the problems found in it. */
 export interface ParsedRow {
   /** 1-based line number in the original file, for the error message. */
@@ -192,7 +197,7 @@ function validateProductRow(
   values: Record<string, string>,
   language: 'id' | 'en',
 ): string | undefined {
-  const t = (id: string, en: string) => (language === 'id' ? id : en)
+  const t = makeT(language)
 
   if (values.name === '') {
     return t('Nama produk kosong.', 'The product name is empty.')

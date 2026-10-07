@@ -30,6 +30,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { ProductRow } from '../../types/database'
+import { makeT } from '../../i18n'
 
 export interface BarcodeLabelsProps {
   products: ProductRow[]
@@ -47,7 +48,7 @@ export function BarcodeLabels({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [drawFailed, setDrawFailed] = useState<string | null>(null)
 
-  const t = (id: string, en: string) => (language === 'id' ? id : en)
+  const t = makeT(language)
 
   // Products that actually have a barcode. A product without one cannot
   // be labelled, and showing an empty box would just confuse.

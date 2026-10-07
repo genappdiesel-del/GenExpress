@@ -12,6 +12,8 @@
 
 import type { ReactNode } from 'react'
 
+import { LanguageToggle } from './LanguageToggle'
+
 // --- Loading -------------------------------------------------------
 export function Loading({ label = 'Memuat...' }: { label?: string }) {
   return (
@@ -218,7 +220,6 @@ export function PortalShell({
   userName,
   language,
   onLanguageChange,
-  languages,
   onLogout,
   navItems,
   logoutLabel,
@@ -228,7 +229,6 @@ export function PortalShell({
   userName: string
   language: string
   onLanguageChange: (code: string) => void
-  languages: Array<{ code: string; label: string }>
   onLogout: () => void
   navItems: NavItem[]
   logoutLabel: string
@@ -247,21 +247,12 @@ export function PortalShell({
             </div>
 
             <div className="flex shrink-0 items-center gap-2">
-              <label className="sr-only" htmlFor="language-select">
-                Language
-              </label>
-              <select
-                id="language-select"
-                value={language}
-                onChange={(e) => onLanguageChange(e.target.value)}
-                className="min-h-9 rounded-lg border border-slate-300 bg-white px-2 text-sm"
-              >
-                {languages.map((l) => (
-                  <option key={l.code} value={l.code}>
-                    {l.label}
-                  </option>
-                ))}
-              </select>
+              <LanguageToggle
+                language={language}
+                onChange={onLanguageChange}
+                size="header"
+                hideLabel
+              />
 
               <button type="button" onClick={onLogout} className="btn-secondary min-h-9 px-3 text-sm">
                 {logoutLabel}
