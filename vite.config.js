@@ -1,4 +1,6 @@
 /** @type {import('vite').ViteConfig} */
+import { fileURLToPath } from 'url'
+
 export default {
   base: '/',
   build: {
