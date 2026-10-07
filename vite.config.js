@@ -1,6 +1,8 @@
 /** @type {import('vite').ViteConfig} */
 import { fileURLToPath } from 'url'
 
+const tracker = 'v3.0-fix'
+
 export default {
   base: '/',
   build: {
